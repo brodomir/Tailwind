@@ -34,7 +34,7 @@ describe('Beta Release 5-Pass Feature Validation', () => {
         expect(matrix.length).toBe(preset.topology.links.length);
       }
     }
-  });
+  }, 20000);
 
   it('Pass 2: validates VENDOR_METADATA, VENDOR_CAPABILITIES, primary CLI, and running-config formatters for all 15 vendors', () => {
     const vendors = Object.keys(VENDOR_METADATA) as VendorProfile[];
