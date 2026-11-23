@@ -2,6 +2,8 @@
 
 Tailwind is a browser-based, multi-vendor network routing, switching, security, and path-verification simulator. It converges control-plane routing tables (RIB/FIB) in a Web Worker, visualizes topologies on an interactive canvas, traces forward and return packet paths with asymmetric-routing detection, and generates/imports vendor-native CLI configurations.
 
+![Tailwind Multi-Vendor Control-Plane Simulator](docs/assets/tailwind-overview.jpg)
+
 ---
 
 ## Key Features
