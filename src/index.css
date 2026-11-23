@@ -1,0 +1,409 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@theme {
+  --font-sans: 'SF Pro Text', 'SF Pro Display', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --ios-bg-primary: #000000;
+  --ios-bg-secondary: #1c1c1e;
+  --ios-bg-tertiary: #2c2c2e;
+  --ios-separator: rgba(255, 255, 255, 0.09);
+  --ios-blue: #0a84ff;
+  --ios-green: #30d158;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background-color: var(--ios-bg-primary);
+  font-family: 'SF Pro Text', 'SF Pro Display', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle iOS-style overlay scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.32);
+}
+
+.ant-table-cell,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* iOS-inspired switches, segmented tabs, modals & grouped tables */
+.ant-switch.ant-switch-checked {
+  background: var(--ios-green) !important;
+}
+
+.ant-switch.ant-switch-checked:hover:not(.ant-switch-disabled) {
+  background: #34d95e !important;
+}
+
+.ant-modal .ant-modal-content {
+  border-radius: 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65) !important;
+}
+
+.ant-dropdown .ant-dropdown-menu,
+.ant-select-dropdown {
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55) !important;
+}
+
+.ant-table-wrapper .ant-table {
+  background: transparent !important;
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  background: #1c1c1e !important;
+  color: #8e8e93 !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid var(--ios-separator) !important;
+  padding-top: 7px !important;
+  padding-bottom: 7px !important;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+  padding-top: 7px !important;
+  padding-bottom: 7px !important;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr:hover > td {
+  background: rgba(10, 132, 255, 0.08) !important;
+}
+
+.ant-tabs-nav {
+  margin-bottom: 10px !important;
+}
+
+.ant-tabs-nav::before {
+  border-bottom-color: var(--ios-separator) !important;
+}
+
+.ant-card {
+  border-radius: 12px !important;
+  border-color: var(--ios-separator) !important;
+  backdrop-filter: blur(20px) saturate(160%);
+}
+
+/* macOS-style inputs, selects, buttons & focus rings */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-select-selector,
+.ant-btn {
+  border-radius: 8px !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease !important;
+}
+
+.ant-input:focus,
+.ant-input-affix-wrapper-focused,
+.ant-input-number-focused,
+.ant-select-focused .ant-select-selector {
+  border-color: #0a84ff !important;
+  box-shadow: 0 0 0 2.5px rgba(10, 132, 255, 0.25) !important;
+}
+
+.ant-collapse-header {
+  padding: 4px 0 !important;
+}
+
+.ant-collapse-content-box {
+  padding: 6px 0 2px 0 !important;
+}
+
+/* React Flow frosted-glass Apple controls */
+.react-flow__node {
+  cursor: pointer;
+}
+
+.react-flow__controls {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+.react-flow__controls button {
+  background-color: rgba(28, 28, 30, 0.78);
+  color: #ebebf5;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.react-flow__controls button:hover {
+  background-color: rgba(44, 44, 46, 0.9);
+  color: #ffffff;
+}
+
+.react-flow__minimap {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+
+/* ============================================================================
+   iOS Dark Mode Surface Unification (aligns legacy slate surfaces to #1c1c1e)
+   ============================================================================ */
+html.dark .bg-\[\#0b1120\],
+html.dark .bg-\[\#0f172a\],
+html.dark .bg-\[\#111827\],
+html.dark .bg-slate-950,
+html.dark .bg-slate-900,
+html.dark .bg-slate-900\/70,
+html.dark .bg-slate-900\/60 {
+  background-color: #1c1c1e !important;
+}
+
+html.dark .bg-slate-800 {
+  background-color: #2c2c2e !important;
+}
+
+html.dark .border-slate-800,
+html.dark .border-slate-700,
+html.dark .border-slate-700\/80,
+html.dark .border-slate-700\/70,
+html.dark .border-slate-700\/60 {
+  border-color: rgba(255, 255, 255, 0.09) !important;
+}
+
+html.dark .text-slate-100,
+html.dark .text-slate-200 {
+  color: #f5f5f7 !important;
+}
+
+html.dark .text-slate-300 {
+  color: #d1d1d6 !important;
+}
+
+html.dark .text-slate-400 {
+  color: #98989d !important;
+}
+
+/* ============================================================================
+   iOS Light Mode Overrides (ensures high-contrast readability everywhere)
+   ============================================================================ */
+html.light body,
+html.light #root {
+  background-color: #f2f2f7;
+  color: #1c1c1e;
+}
+
+html.light * {
+  scrollbar-color: rgba(60, 60, 67, 0.25) transparent;
+}
+
+html.light *::-webkit-scrollbar-thumb {
+  background-color: rgba(60, 60, 67, 0.25);
+}
+
+html.light *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(60, 60, 67, 0.42);
+}
+
+html.light .ant-switch.ant-switch-checked {
+  background: #34c759 !important;
+}
+
+html.light .ant-modal .ant-modal-content,
+html.light .ant-dropdown .ant-dropdown-menu,
+html.light .ant-select-dropdown {
+  border-color: rgba(60, 60, 67, 0.14) !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12) !important;
+}
+
+html.light .ant-table-wrapper .ant-table-thead > tr > th {
+  background: #f5f5f7 !important;
+  color: #636366 !important;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.14) !important;
+}
+
+html.light .ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom: 1px solid rgba(60, 60, 67, 0.08) !important;
+  color: #1c1c1e;
+}
+
+html.light .ant-table-wrapper .ant-table-tbody > tr:hover > td {
+  background: rgba(0, 122, 255, 0.06) !important;
+}
+
+html.light .ant-tabs-nav::before {
+  border-bottom-color: rgba(60, 60, 67, 0.12) !important;
+}
+
+html.light .ant-card {
+  border-color: rgba(60, 60, 67, 0.12) !important;
+}
+
+html.light .react-flow__controls {
+  border-color: rgba(60, 60, 67, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+html.light .react-flow__controls button {
+  background-color: rgba(255, 255, 255, 0.88);
+  color: #1c1c1e;
+  border-color: rgba(60, 60, 67, 0.12);
+}
+
+html.light .react-flow__controls button:hover {
+  background-color: #f2f2f7;
+  color: #000000;
+}
+
+html.light .react-flow__minimap {
+  border-color: rgba(60, 60, 67, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+/* Light-mode surface & typography contrast for dark-authored utility classes */
+html.light .bg-\[\#0b1120\],
+html.light .bg-\[\#0f172a\],
+html.light .bg-\[\#111827\],
+html.light .bg-\[\#121214\],
+html.light .bg-\[\#1c1c1e\],
+html.light .bg-\[\#1c1c1e\]\/90,
+html.light .bg-slate-950,
+html.light .bg-slate-900,
+html.light .bg-slate-900\/95,
+html.light .bg-slate-900\/90,
+html.light .bg-slate-900\/80,
+html.light .bg-slate-900\/60 {
+  background-color: #ffffff !important;
+}
+
+html.light .bg-slate-800,
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light .bg-slate-700,
+html.light .bg-slate-700\/80 {
+  background-color: #e5e5ea !important;
+}
+
+html.light .bg-\[\#121214\] {
+  background-color: #f2f2f7 !important;
+}
+
+html.light .bg-\[\#1c1c1e\]\/90 {
+  background-color: rgba(249, 249, 251, 0.92) !important;
+}
+
+html.light .border-slate-800,
+html.light .border-slate-700,
+html.light .border-slate-700\/80,
+html.light .border-white\/\[0\.08\] {
+  border-color: rgba(60, 60, 67, 0.14) !important;
+}
+
+html.light .text-\[\#f5f5f7\],
+html.light .text-slate-100,
+html.light .text-slate-200 {
+  color: #1c1c1e !important;
+}
+
+html.light .text-slate-300 {
+  color: #3a3a3c !important;
+}
+
+html.light .text-slate-400,
+html.light .text-\[\#8e8e93\] {
+  color: #636366 !important;
+}
+
+html.light .text-slate-500,
+html.light .text-slate-600 {
+  color: #8e8e93 !important;
+}
+
+html.light .text-\[\#0a84ff\] {
+  color: #007aff !important;
+}
+
+html.light .text-sky-300,
+html.light .text-sky-400 {
+  color: #0066cc !important;
+}
+
+html.light .text-emerald-300 {
+  color: #137333 !important;
+}
+
+html.light .text-amber-200,
+html.light .text-amber-300,
+html.light .text-amber-400 {
+  color: #b45309 !important;
+}
+
+html.light .text-violet-300 {
+  color: #6d28d9 !important;
+}
+
+html.light .text-rose-300 {
+  color: #c5221f !important;
+}
+
+html.light .bg-emerald-950\/20,
+html.light .bg-emerald-950\/30 {
+  background-color: rgba(52, 199, 89, 0.1) !important;
+}
+
+html.light .bg-rose-950\/30,
+html.light .bg-rose-950\/60,
+html.light .bg-rose-950\/90 {
+  background-color: rgba(255, 235, 238, 0.96) !important;
+}
+
+html.light .bg-amber-950\/30,
+html.light .bg-amber-950\/90 {
+  background-color: rgba(254, 243, 199, 0.96) !important;
+}
+
+html.light .bg-indigo-950\/90 {
+  background-color: rgba(224, 231, 255, 0.96) !important;
+}
+
+html.light .text-rose-200 { color: #b91c1c !important; }
+html.light .text-indigo-200 { color: #3730a3 !important; }
+
+html.light .text-blue-300 { color: #1d4ed8 !important; }
+html.light .text-indigo-300 { color: #4338ca !important; }
+html.light .text-cyan-300 { color: #0e7490 !important; }
+html.light .text-orange-300 { color: #c2410c !important; }
+html.light .text-lime-300 { color: #3f6212 !important; }
+html.light .text-teal-300 { color: #0f766e !important; }
+html.light .text-purple-300 { color: #7e22ce !important; }
+
+
