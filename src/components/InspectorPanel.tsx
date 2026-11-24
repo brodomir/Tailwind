@@ -383,6 +383,26 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         updateInterface(node.id, iface.id, { eigrpHoldTime: val ?? undefined })
                       }
                     />
+                    <InputNumber
+                      size="small"
+                      className="col-span-2 !w-full"
+                      placeholder="BW (kbps)"
+                      min={1}
+                      value={iface.eigrpBw ?? null}
+                      onChange={(val) =>
+                        updateInterface(node.id, iface.id, { eigrpBw: val ?? undefined })
+                      }
+                    />
+                    <InputNumber
+                      size="small"
+                      className="col-span-2 !w-full"
+                      placeholder="Delay (us)"
+                      min={1}
+                      value={iface.eigrpDelay ?? null}
+                      onChange={(val) =>
+                        updateInterface(node.id, iface.id, { eigrpDelay: val ?? undefined })
+                      }
+                    />
                   </>
                 )}
                 {node.isis?.enabled && (
@@ -991,8 +1011,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 <Select
                   size="small"
                   allowClear
-                  className="col-span-12"
-                  placeholder="Track Object (optional IP SLA reachability)"
+                  className="col-span-5"
+                  placeholder="Track Object (optional)"
                   value={sr.trackId}
                   onChange={(val) =>
                     updateNode(node.id, {
@@ -1006,6 +1026,48 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     label: `Track ${t.id}: ${t.targetIp}`,
                   }))}
                 />
+                <InputNumber
+                  size="small"
+                  className="col-span-2 !w-full"
+                  placeholder="Tag"
+                  min={0}
+                  value={sr.tag ?? null}
+                  onChange={(val) =>
+                    updateNode(node.id, {
+                      staticRoutes: node.staticRoutes.map((x) =>
+                        x.id === sr.id ? { ...x, tag: val ?? undefined } : x
+                      ),
+                    })
+                  }
+                />
+                <Input
+                  size="small"
+                  className="col-span-3"
+                  placeholder="Out If / Null0"
+                  value={sr.interfaceName ?? ''}
+                  onChange={(e) =>
+                    updateNode(node.id, {
+                      staticRoutes: node.staticRoutes.map((x) =>
+                        x.id === sr.id ? { ...x, interfaceName: e.target.value || undefined } : x
+                      ),
+                    })
+                  }
+                  style={{ fontFamily: 'monospace' }}
+                />
+                <label className="col-span-2 flex cursor-pointer items-center justify-end gap-1 text-[10px] text-slate-400" title="Global Next-Hop (VRF-to-Global leak)">
+                  <Switch
+                    size="small"
+                    checked={Boolean(sr.globalNextHop)}
+                    onChange={(checked) =>
+                      updateNode(node.id, {
+                        staticRoutes: node.staticRoutes.map((x) =>
+                          x.id === sr.id ? { ...x, globalNextHop: checked || undefined } : x
+                        ),
+                      })
+                    }
+                  />
+                  <span>Global</span>
+                </label>
               </div>
             ))}
             <Button
@@ -1109,73 +1171,154 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               {caps.pbrTitle}
             </div>
             {pbrRules.map((p) => (
-              <div key={p.id} className="grid grid-cols-12 items-center gap-1.5">
-                <Input
-                  size="small"
-                  className="col-span-3"
-                  value={p.name}
-                  placeholder="Rule"
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      pbrRules: pbrRules.map((x) =>
-                        x.id === p.id ? { ...x, name: e.target.value } : x
-                      ),
-                    })
-                  }
-                />
-                <Input
-                  size="small"
-                  className="col-span-3"
-                  value={p.matchPrefix}
-                  placeholder="Match CIDR"
-                  style={{ fontFamily: 'monospace' }}
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      pbrRules: pbrRules.map((x) =>
-                        x.id === p.id ? { ...x, matchPrefix: e.target.value } : x
-                      ),
-                    })
-                  }
-                />
-                <Input
-                  size="small"
-                  className="col-span-3"
-                  value={p.nextHop}
-                  placeholder="Next-hop"
-                  style={{ fontFamily: 'monospace' }}
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      pbrRules: pbrRules.map((x) =>
-                        x.id === p.id ? { ...x, nextHop: e.target.value } : x
-                      ),
-                    })
-                  }
-                />
-                <Input
-                  size="small"
-                  className="col-span-2"
-                  value={p.multiLinkPool ?? ''}
-                  placeholder="Pool"
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      pbrRules: pbrRules.map((x) =>
-                        x.id === p.id ? { ...x, multiLinkPool: e.target.value } : x
-                      ),
-                    })
-                  }
-                />
-                <Button
-                  size="small"
-                  danger
-                  type="text"
-                  className="col-span-1"
-                  icon={<DeleteOutlined />}
-                  onClick={() =>
-                    updateNode(node.id, {
-                      pbrRules: pbrRules.filter((x) => x.id !== p.id),
-                    })
-                  }
-                />
+              <div key={p.id} className="space-y-1 rounded border border-slate-800/80 bg-[#0b1120]/60 p-1.5">
+                <div className="grid grid-cols-12 items-center gap-1">
+                  <Input
+                    size="small"
+                    className="col-span-3"
+                    value={p.name}
+                    placeholder="Rule"
+                    onChange={(e) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, name: e.target.value } : x
+                        ),
+                      })
+                    }
+                  />
+                  <Input
+                    size="small"
+                    className="col-span-3"
+                    value={p.srcCidr ?? ''}
+                    placeholder="Src CIDR (any)"
+                    style={{ fontFamily: 'monospace' }}
+                    onChange={(e) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, srcCidr: e.target.value || undefined } : x
+                        ),
+                      })
+                    }
+                  />
+                  <Input
+                    size="small"
+                    className="col-span-3"
+                    value={p.matchPrefix}
+                    placeholder="Dst CIDR"
+                    style={{ fontFamily: 'monospace' }}
+                    onChange={(e) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, matchPrefix: e.target.value } : x
+                        ),
+                      })
+                    }
+                  />
+                  <Input
+                    size="small"
+                    className="col-span-2"
+                    value={p.nextHop}
+                    placeholder="Gateway"
+                    style={{ fontFamily: 'monospace' }}
+                    onChange={(e) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, nextHop: e.target.value } : x
+                        ),
+                      })
+                    }
+                  />
+                  <Button
+                    size="small"
+                    danger
+                    type="text"
+                    className="col-span-1"
+                    icon={<DeleteOutlined />}
+                    onClick={() =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.filter((x) => x.id !== p.id),
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid grid-cols-12 items-center gap-1">
+                  <Select
+                    size="small"
+                    allowClear
+                    className="col-span-3"
+                    placeholder="In If"
+                    value={p.ingressInterface}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, ingressInterface: val || undefined } : x
+                        ),
+                      })
+                    }
+                    options={node.interfaces.map((i) => ({ value: i.name, label: `in: ${i.name}` }))}
+                  />
+                  <Select
+                    size="small"
+                    allowClear
+                    className="col-span-3"
+                    placeholder="Out If"
+                    value={p.interfaceName}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, interfaceName: val || undefined } : x
+                        ),
+                      })
+                    }
+                    options={node.interfaces.map((i) => ({ value: i.name, label: `out: ${i.name}` }))}
+                  />
+                  <Select
+                    size="small"
+                    className="col-span-2"
+                    value={p.protocol ?? 'any'}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, protocol: val } : x
+                        ),
+                      })
+                    }
+                    options={[
+                      { value: 'any', label: 'any' },
+                      { value: 'tcp', label: 'tcp' },
+                      { value: 'udp', label: 'udp' },
+                      { value: 'icmp', label: 'icmp' },
+                    ]}
+                  />
+                  <InputNumber
+                    size="small"
+                    className="col-span-2 !w-full"
+                    placeholder="Port"
+                    min={1}
+                    max={65535}
+                    value={p.dstPort ?? null}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, dstPort: val ?? undefined } : x
+                        ),
+                      })
+                    }
+                  />
+                  <Input
+                    size="small"
+                    className="col-span-2"
+                    value={p.multiLinkPool ?? ''}
+                    placeholder="Pool"
+                    onChange={(e) =>
+                      updateNode(node.id, {
+                        pbrRules: pbrRules.map((x) =>
+                          x.id === p.id ? { ...x, multiLinkPool: e.target.value || undefined } : x
+                        ),
+                      })
+                    }
+                  />
+                </div>
               </div>
             ))}
             <Button
@@ -1355,7 +1498,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     />
                     <span>max-metric</span>
                   </label>
-                  {['cisco-ios-xe', 'cisco-nx-os', 'arista-eos', 'juniper-junos', 'mikrotik-routeros', 'forcepoint-ngfw', 'fortigate'].includes(
+                  {['cisco-ios-xe', 'cisco-nx-os', 'cisco-ios-xr', 'arista-eos', 'aruba-aos-cx', 'juniper-junos', 'mikrotik-routeros', 'forcepoint-ngfw', 'fortigate', 'checkpoint-gaia', 'vyos'].includes(
                     node.vendor
                   ) && (
                     <div className="flex items-center gap-1.5">
@@ -1389,44 +1532,64 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       }
                     />
                   </div>
-                  <div>
-                    <div className="mb-0.5 text-slate-400">Area 1 Type</div>
-                    <Select
-                      size="small"
-                      className="w-full"
-                      value={node.ospf.areaTypes?.[1] ?? 'normal'}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            areaTypes: { ...(node.ospf.areaTypes ?? {}), 1: val },
-                          },
-                        })
-                      }
-                      options={[
-                        { value: 'normal', label: 'Normal' },
-                        { value: 'stub', label: 'Stub' },
-                        { value: 'totally-stubby', label: 'Totally Stubby' },
-                        { value: 'nssa', label: 'NSSA' },
-                      ]}
-                    />
-                    {(node.ospf.areaTypes?.[1] === 'nssa') && (
-                      <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-300">
-                        <Switch
-                          size="small"
-                          checked={Boolean(node.ospf.nssaNoSummary?.[1])}
-                          onChange={(checked) =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                nssaNoSummary: { ...(node.ospf.nssaNoSummary ?? {}), 1: checked },
-                              },
-                            })
-                          }
-                        />
-                        <span>NSSA no-summary</span>
-                      </label>
-                    )}
+                  <div className="space-y-1.5">
+                    {(() => {
+                      const nonBackboneAreas = Array.from(
+                        new Set([
+                          ...node.interfaces
+                            .map((i) => i.ospfArea)
+                            .filter((a): a is number => a !== undefined && a !== 0),
+                          ...node.ospf.networks
+                            .map((n) => n.area)
+                            .filter((a) => a !== 0),
+                          ...Object.keys(node.ospf.areaTypes ?? {})
+                            .map(Number)
+                            .filter((a) => Number.isFinite(a) && a !== 0),
+                        ])
+                      ).sort((a, b) => a - b);
+                      const areasToShow = nonBackboneAreas.length ? nonBackboneAreas : [1];
+                      return areasToShow.map((areaId) => (
+                        <div key={areaId}>
+                          <div className="mb-0.5 text-slate-400">Area {areaId} Type</div>
+                          <Select
+                            size="small"
+                            className="w-full"
+                            value={node.ospf.areaTypes?.[areaId] ?? 'normal'}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  areaTypes: { ...(node.ospf.areaTypes ?? {}), [areaId]: val },
+                                },
+                              })
+                            }
+                            options={[
+                              { value: 'normal', label: 'Normal' },
+                              { value: 'stub', label: 'Stub' },
+                              { value: 'totally-stubby', label: 'Totally Stubby' },
+                              { value: 'nssa', label: 'NSSA' },
+                            ]}
+                          />
+                          {node.ospf.areaTypes?.[areaId] === 'nssa' && (
+                            <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-300">
+                              <Switch
+                                size="small"
+                                checked={Boolean(node.ospf.nssaNoSummary?.[areaId])}
+                                onChange={(checked) =>
+                                  updateNode(node.id, {
+                                    ospf: {
+                                      ...node.ospf,
+                                      nssaNoSummary: { ...(node.ospf.nssaNoSummary ?? {}), [areaId]: checked },
+                                    },
+                                  })
+                                }
+                              />
+                              <span>Area {areaId} NSSA no-summary</span>
+                            </label>
+                          )}
+                        </div>
+                      ));
+                    })()}
                   </div>
                 </div>
                 <div>
@@ -1735,6 +1898,29 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             },
                           })
                         }
+                      />
+                    </div>
+                    <div className="flex items-center gap-1 text-[11px]" title="EIGRP K-values (K1,K2,K3,K4,K5)">
+                      <span className="text-slate-400">K:</span>
+                      <Input
+                        size="small"
+                        style={{ width: 84, fontFamily: 'monospace' }}
+                        placeholder="1,0,1,0,0"
+                        value={(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}
+                        onChange={(e) => {
+                          const parts = e.target.value.split(/[,\s]+/).map(Number);
+                          if (parts.length === 5 && parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) {
+                            updateNode(node.id, {
+                              eigrp: {
+                                ...(node.eigrp ?? {}),
+                                enabled: true,
+                                asn: node.eigrp?.asn ?? 100,
+                                networks: node.eigrp?.networks ?? [],
+                                kValues: parts as [number, number, number, number, number],
+                              },
+                            });
+                          }
+                        }}
                       />
                     </div>
                     <label className="flex cursor-pointer items-center gap-1 text-slate-300">
@@ -2179,6 +2365,61 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 >
                   Add IS-IS Summary
                 </Button>
+                {node.isis?.level === 'L1-L2' && (
+                  <div className="space-y-1 pt-1">
+                    {(node.isis?.leakL2ToL1 ?? []).map((lk) => (
+                      <div key={lk.id} className="flex items-center gap-1">
+                        <Input
+                          size="small"
+                          placeholder="L2→L1 Leak CIDR"
+                          value={lk.prefix}
+                          style={{ fontFamily: 'monospace' }}
+                          onChange={(e) =>
+                            updateNode(node.id, {
+                              isis: {
+                                ...node.isis!,
+                                leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).map((x) =>
+                                  x.id === lk.id ? { ...x, prefix: e.target.value } : x
+                                ),
+                              },
+                            })
+                          }
+                        />
+                        <Button
+                          size="small"
+                          danger
+                          type="text"
+                          icon={<DeleteOutlined />}
+                          onClick={() =>
+                            updateNode(node.id, {
+                              isis: {
+                                ...node.isis!,
+                                leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).filter((x) => x.id !== lk.id),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    ))}
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() =>
+                        updateNode(node.id, {
+                          isis: {
+                            ...node.isis!,
+                            leakL2ToL1: [
+                              ...(node.isis?.leakL2ToL1 ?? []),
+                              { id: `ileak-${Date.now()}`, prefix: '10.0.0.0/8' },
+                            ],
+                          },
+                        })
+                      }
+                    >
+                      Add L2→L1 Leak
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3841,10 +4082,26 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   </Space>
                 </div>
                 {(node.bgp.flowspecRules ?? []).map((fs) => (
-                  <div key={fs.id} className="flex items-center gap-1">
+                  <div key={fs.id} className="flex flex-wrap items-center gap-1">
                     <Input
                       size="small"
-                      className="!w-32"
+                      className="!w-28"
+                      value={fs.srcCidr ?? ''}
+                      placeholder="Src CIDR"
+                      onChange={(e) =>
+                        updateNode(node.id, {
+                          bgp: {
+                            ...node.bgp,
+                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                              x.id === fs.id ? { ...x, srcCidr: e.target.value || undefined } : x
+                            ),
+                          },
+                        })
+                      }
+                    />
+                    <Input
+                      size="small"
+                      className="!w-28"
                       value={fs.dstCidr ?? ''}
                       placeholder="Dst CIDR"
                       onChange={(e) =>
@@ -3857,6 +4114,27 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                           },
                         })
                       }
+                    />
+                    <Select
+                      size="small"
+                      className="!w-16"
+                      value={fs.protocol ?? 'any'}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          bgp: {
+                            ...node.bgp,
+                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                              x.id === fs.id ? { ...x, protocol: val } : x
+                            ),
+                          },
+                        })
+                      }
+                      options={[
+                        { value: 'any', label: 'any' },
+                        { value: 'tcp', label: 'tcp' },
+                        { value: 'udp', label: 'udp' },
+                        { value: 'icmp', label: 'icmp' },
+                      ]}
                     />
                     <InputNumber
                       size="small"
@@ -3894,6 +4172,43 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         { value: 'redirect', label: 'Redirect' },
                       ]}
                     />
+                    {fs.action === 'rate-limit' && (
+                      <InputNumber
+                        size="small"
+                        className="!w-20"
+                        min={1}
+                        placeholder="Mbps"
+                        value={fs.rateMbps ?? null}
+                        onChange={(v) =>
+                          updateNode(node.id, {
+                            bgp: {
+                              ...node.bgp,
+                              flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                x.id === fs.id ? { ...x, rateMbps: v ?? undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                    )}
+                    {fs.action === 'redirect' && (
+                      <Input
+                        size="small"
+                        className="!w-28"
+                        placeholder="Redirect NH"
+                        value={fs.redirectNextHop ?? ''}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            bgp: {
+                              ...node.bgp,
+                              flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                x.id === fs.id ? { ...x, redirectNextHop: e.target.value || undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                    )}
                     <Button
                       size="small"
                       danger
@@ -4015,6 +4330,24 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       })
                     }
                   />
+                  {node.bgp.confederationId && (
+                    <Input
+                      size="small"
+                      className="!w-28"
+                      placeholder="Confed Peers (65001 65002)"
+                      value={(node.bgp.confederationPeers ?? []).join(' ')}
+                      style={{ fontFamily: 'monospace' }}
+                      onChange={(e) => {
+                        const peers = e.target.value
+                          .split(/[,\s]+/)
+                          .map(Number)
+                          .filter((n) => Number.isFinite(n) && n > 0);
+                        updateNode(node.id, {
+                          bgp: { ...node.bgp, confederationPeers: peers.length ? peers : undefined },
+                        });
+                      }}
+                    />
+                  )}
                   <label className="flex cursor-pointer items-center gap-1">
                     <Switch
                       size="small"
@@ -4024,6 +4357,16 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       }
                     />
                     <span>always-compare-med</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.bgp.deterministicMed)}
+                      onChange={(checked) =>
+                        updateNode(node.id, { bgp: { ...node.bgp, deterministicMed: checked } })
+                      }
+                    />
+                    <span>deterministic-med</span>
                   </label>
                   <label className="flex cursor-pointer items-center gap-1">
                     <Switch
@@ -4382,6 +4725,43 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                           }
                         />
                       </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-400">MED:</span>
+                        <InputNumber
+                          size="small"
+                          className="!w-16"
+                          placeholder="0"
+                          min={0}
+                          value={p.med ?? null}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              bgp: {
+                                ...node.bgp,
+                                peers: node.bgp.peers.map((x) =>
+                                  x.id === p.id ? { ...x, med: val ?? undefined } : x
+                                ),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <label className="flex cursor-pointer items-center gap-1" title="disable-connected-check">
+                        <Switch
+                          size="small"
+                          checked={Boolean(p.disableConnectedCheck)}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              bgp: {
+                                ...node.bgp,
+                                peers: node.bgp.peers.map((x) =>
+                                  x.id === p.id ? { ...x, disableConnectedCheck: checked || undefined } : x
+                                ),
+                              },
+                            })
+                          }
+                        />
+                        <span>no-conn-chk</span>
+                      </label>
                       <div className="flex items-center gap-1">
                         <span className="text-slate-400">Local-AS:</span>
                         <InputNumber

@@ -893,6 +893,70 @@ function getOspfInterfaceCost(iface: NodeConfig['interfaces'][number], node: Nod
   return 10;
 }
 
+function normalizeOspfAreaOption(t?: 'normal' | 'stub' | 'totally-stubby' | 'nssa'): 'normal' | 'stub' | 'nssa' {
+  if (!t || t === 'normal') return 'normal';
+  if (t === 'nssa') return 'nssa';
+  return 'stub';
+}
+
+function electOspfSegmentRoles(
+  node: NodeConfig,
+  adj: Adjacency,
+  adjMap: Map<string, Adjacency[]>,
+  nodeMap: Map<string, NodeConfig>
+): { localRole: 'DR' | 'BDR' | 'DROther'; remoteRole: 'DR' | 'BDR' | 'DROther'; isTwoWayOnly: boolean } {
+  const localArea = adj.localIface.ospfArea;
+  const localVrf = adj.localIface.vrf || 'default';
+  const localAuth = adj.localIface.ospfAuthKey ?? node.ospf.authKey ?? '';
+  const localHello = adj.localIface.ospfHelloInterval ?? 10;
+  const localDead = adj.localIface.ospfDeadInterval ?? 40;
+  const localAreaOpt = normalizeOspfAreaOption(localArea !== undefined ? node.ospf.areaTypes?.[localArea] : undefined);
+  const localMtu = adj.localIface.mtu ?? 1500;
+
+  const speakers = new Map<string, { nodeId: string; prio: number; rid: string }>();
+  speakers.set(node.id, {
+    nodeId: node.id,
+    prio: adj.localIface.ospfPriority ?? 1,
+    rid: getNodeRouterId(node, localVrf),
+  });
+
+  for (const peerAdj of adjMap.get(node.id) ?? []) {
+    if (peerAdj.localIface.id !== adj.localIface.id) continue;
+    if (peerAdj.remoteIface.passive || peerAdj.remoteIface.ospfArea !== localArea) continue;
+    const peerNode = nodeMap.get(peerAdj.remoteNodeId);
+    if (!peerNode || !peerNode.ospf.enabled || peerNode.adminDown) continue;
+    const pAuth = peerAdj.remoteIface.ospfAuthKey ?? peerNode.ospf.authKey ?? '';
+    const pHello = peerAdj.remoteIface.ospfHelloInterval ?? 10;
+    const pDead = peerAdj.remoteIface.ospfDeadInterval ?? 40;
+    const pAreaOpt = normalizeOspfAreaOption(localArea !== undefined ? peerNode.ospf.areaTypes?.[localArea] : undefined);
+    const pMtu = peerAdj.remoteIface.mtu ?? 1500;
+    if (pAuth !== localAuth || pHello !== localHello || pDead !== localDead || pAreaOpt !== localAreaOpt || pMtu !== localMtu) {
+      continue;
+    }
+    const pVrf = peerAdj.remoteIface.vrf || 'default';
+    speakers.set(peerNode.id, {
+      nodeId: peerNode.id,
+      prio: peerAdj.remoteIface.ospfPriority ?? 1,
+      rid: getNodeRouterId(peerNode, pVrf),
+    });
+  }
+
+  const eligible = Array.from(speakers.values())
+    .filter((s) => s.prio > 0)
+    .sort((a, b) => (b.prio !== a.prio ? b.prio - a.prio : compareIpStrings(b.rid, a.rid)));
+  const drId = eligible[0]?.nodeId ?? null;
+  const bdrId = eligible[1]?.nodeId ?? null;
+  const roleOf = (id: string): 'DR' | 'BDR' | 'DROther' =>
+    id === drId ? 'DR' : id === bdrId ? 'BDR' : 'DROther';
+  const localRole = roleOf(node.id);
+  const remoteRole = roleOf(adj.remoteNodeId);
+  return {
+    localRole,
+    remoteRole,
+    isTwoWayOnly: localRole === 'DROther' && remoteRole === 'DROther',
+  };
+}
+
 function solveOspf(
   topology: TopologyState,
   adjMap: Map<string, Adjacency[]>,
@@ -1046,14 +1110,28 @@ function solveOspf(
           }
         }
 
-        const key = `4|${r.vrf}|${r.prefix}/${r.prefixLen}|0|${rType}`;
+        // RFC 3101: ASBR inside an NSSA area (with no Area 0 attachment) originates Type-7 external LSAs in that NSSA area
+        const hasArea0InVrf = node.interfaces.some(
+          (i) => !i.shutdown && (i.vrf || 'default') === ruleVrf && i.ospfArea === 0
+        );
+        const nssaOrigArea = !hasArea0InVrf
+          ? node.interfaces.find(
+              (i) =>
+                !i.shutdown &&
+                (i.vrf || 'default') === ruleVrf &&
+                i.ospfArea !== undefined &&
+                node.ospf.areaTypes?.[i.ospfArea] === 'nssa'
+            )?.ospfArea
+          : undefined;
+        const origArea = nssaOrigArea ?? 0;
+        const key = `4|${r.vrf}|${r.prefix}/${r.prefixLen}|${origArea}|${rType}`;
         if (!lsaMap.has(key)) {
           lsaMap.set(key, {
             af: 4,
             prefix: r.prefix,
             prefixLen: r.prefixLen,
             vrf: r.vrf,
-            area: 0,
+            area: origArea,
             ospfType: rType,
             metric: cost,
             nextHop: r.nextHop,
@@ -1121,7 +1199,7 @@ function solveOspf(
         const isOspfP2p =
           adj.localIface.ospfNetworkType === 'point-to-point' ||
           adj.localIface.ospfNetworkType === 'point-to-multipoint';
-        if (!isOspfP2p && (adj.localIface.ospfPriority ?? 1) === 0 && (adj.remoteIface.ospfPriority ?? 1) === 0) {
+        if (!isOspfP2p && electOspfSegmentRoles(node, adj, adjMap, nodeMap).isTwoWayOnly) {
           continue;
         }
 
@@ -1195,6 +1273,31 @@ function solveOspf(
             rLsa.area !== linkArea
           ) {
             continue;
+          }
+          // RFC 3101 §3.1 NSSA Type-7 -> Type-5 ABR translator election (highest Router-ID ABR translates)
+          if (
+            linkArea === 0 &&
+            (rLsa.ospfType === 'ext1' || rLsa.ospfType === 'ext2') &&
+            rLsa.area !== 0 &&
+            (remoteNode.ospf.areaTypes?.[rLsa.area] === 'nssa' ||
+              node.ospf.areaTypes?.[rLsa.area] === 'nssa')
+          ) {
+            const remoteAbrRid = getNodeRouterId(remoteNode, remoteVrf);
+            const higherAbrExists = topology.nodes.some((candAbr) => {
+              if (candAbr.id === remoteNode.id || !candAbr.ospf.enabled || candAbr.adminDown) return false;
+              const hasNssa = candAbr.interfaces.some(
+                (i) => !i.shutdown && (i.vrf || 'default') === remoteVrf && i.ospfArea === rLsa.area
+              );
+              const hasArea0 = candAbr.interfaces.some(
+                (i) => !i.shutdown && (i.vrf || 'default') === remoteVrf && i.ospfArea === 0
+              );
+              return (
+                hasNssa &&
+                hasArea0 &&
+                compareIpStrings(getNodeRouterId(candAbr, remoteVrf), remoteAbrRid) > 0
+              );
+            });
+            if (higherAbrExists) continue;
           }
 
           let propagatedType: OspfRouteType | null = null;
@@ -1724,8 +1827,25 @@ function solveBgp(
             : undefined;
         let peerAcceptedCount = 0;
         const peerCandidates: CandidateRoute[] = [];
+        const useAddPath =
+          (remotePeerBack?.addPath === 'send' || remotePeerBack?.addPath === 'both') &&
+          (peer.addPath === 'receive' || peer.addPath === 'both');
+        const remoteMultiMap = nodeMultipathBgp.get(remote.node.id);
+        const remoteRoutesToAdvertise: CandidateRoute[] = [];
+        if (useAddPath && remoteMultiMap) {
+          for (const [rk, bestR] of remoteBestMap.entries()) {
+            const mList = remoteMultiMap.get(rk);
+            if (mList && mList.length > 0 && !bestR.bgpAttrs?.locallyOriginated) {
+              remoteRoutesToAdvertise.push(...mList);
+            } else {
+              remoteRoutesToAdvertise.push(bestR);
+            }
+          }
+        } else {
+          remoteRoutesToAdvertise.push(...remoteBestMap.values());
+        }
 
-        for (const rRoute of remoteBestMap.values()) {
+        for (const rRoute of remoteRoutesToAdvertise) {
           if (!rRoute.bgpAttrs || rRoute.vrf !== remote.vrf) continue;
           const canReflectIbgp = Boolean(
             remotePeerBack?.routeReflectorClient || peer.routeReflectorClient
@@ -1998,9 +2118,33 @@ function solveBgp(
           bestpathAsPathIgnore: node.bgp.bestpathAsPathIgnore,
           medMissingAsWorst: node.bgp.medMissingAsWorst,
         };
-        list.sort((a, b) => compareBgpCandidates(a, b, cmpOpts));
-        const winner = list[0];
-        const maxPaths = Math.max(1, node.maxPaths);
+        let winner: CandidateRoute;
+        if (node.bgp.deterministicMed && !node.bgp.alwaysCompareMed) {
+          // RFC 4271 / Deterministic MED: group by neighboring AS, pick best per AS, then compare group winners
+          const byAs = new Map<number, CandidateRoute[]>();
+          for (const c of list) {
+            const nbrAs = c.bgpAttrs?.asPath[0] ?? 0;
+            const grp = byAs.get(nbrAs);
+            if (grp) grp.push(c);
+            else byAs.set(nbrAs, [c]);
+          }
+          const groupWinners: CandidateRoute[] = [];
+          for (const grp of byAs.values()) {
+            grp.sort((a, b) => compareBgpCandidates(a, b, cmpOpts));
+            groupWinners.push(grp[0]);
+          }
+          groupWinners.sort((a, b) => compareBgpCandidates(a, b, cmpOpts));
+          winner = groupWinners[0];
+          list.sort((a, b) => {
+            if (a === winner) return -1;
+            if (b === winner) return 1;
+            return compareBgpCandidates(a, b, cmpOpts);
+          });
+        } else {
+          list.sort((a, b) => compareBgpCandidates(a, b, cmpOpts));
+          winner = list[0];
+        }
+        const maxPaths = Math.max(1, node.maxPaths ?? 4);
         const multipathList: CandidateRoute[] = [];
         const seenNh = new Set<string>();
         for (const cand of list) {
@@ -2215,8 +2359,18 @@ function solveEigrp(
           (adj.localIface.speedMbps ? adj.localIface.speedMbps * 1000 : 1000000);
         const linkDelay = adj.localIface.eigrpDelay ?? 10;
 
+        const remoteSummaries = (remote.eigrp.summaries ?? [])
+          .map((s) => ({ raw: s.prefix, parsed: parseCidr(s.prefix) }))
+          .filter((s): s is { raw: string; parsed: NonNullable<ReturnType<typeof parseCidr>> } => Boolean(s.parsed));
+
         for (const rp of nodePaths.get(remote.id)!) {
           if (rp.vrf !== remoteVrf || rp.viaNodeId === node.id) continue;
+          // RFC 7868: EIGRP summary routes suppress more-specific routes outbound and advertise the summary prefix
+          const matchedSum = remoteSummaries.find(
+            (s) => rp.prefixLen > s.parsed.prefixLen && isIpInCidr(rp.prefix, s.raw)
+          );
+          const advPrefix = matchedSum ? matchedSum.parsed.network : rp.prefix;
+          const advPrefixLen = matchedSum ? matchedSum.parsed.prefixLen : rp.prefixLen;
           const minBw = Math.min(rp.minBw, linkBw);
           const sumDelay = rp.sumDelay + linkDelay;
           const fd = computeEigrpMetric(minBw, sumDelay, kVals);
@@ -2224,14 +2378,14 @@ function solveEigrp(
           const existingIdx = myPaths.findIndex(
             (p) =>
               p.vrf === localVrf &&
-              p.prefix === rp.prefix &&
-              p.prefixLen === rp.prefixLen &&
+              p.prefix === advPrefix &&
+              p.prefixLen === advPrefixLen &&
               p.nextHop === adj.remoteIp
           );
           if (existingIdx === -1) {
             myPaths.push({
-              prefix: rp.prefix,
-              prefixLen: rp.prefixLen,
+              prefix: advPrefix,
+              prefixLen: advPrefixLen,
               vrf: localVrf,
               minBw,
               sumDelay,
@@ -2763,16 +2917,42 @@ function solveRip(
         const localVrf = adj.localIface.vrf || 'default';
         const remoteVrf = adj.remoteIface.vrf || 'default';
 
+        const getClassfulBoundary = (ip: string): { network: string; prefixLen: number } | null => {
+          const octets = ip.split('.').map(Number);
+          if (octets.length !== 4 || octets.some((o) => !Number.isFinite(o))) return null;
+          if (octets[0] < 128) return { network: `${octets[0]}.0.0.0`, prefixLen: 8 };
+          if (octets[0] < 192) return { network: `${octets[0]}.${octets[1]}.0.0`, prefixLen: 16 };
+          if (octets[0] < 224) return { network: `${octets[0]}.${octets[1]}.${octets[2]}.0`, prefixLen: 24 };
+          return null;
+        };
+        const isRipV1 = (remote.rip.version ?? 2) === 1 || (node.rip.version ?? 2) === 1;
+        const linkClassful = getClassfulBoundary(adj.remoteIp);
+
         for (const rEntry of nodeRoutes.get(remote.id)!.values()) {
           if (rEntry.vrf !== remoteVrf || rEntry.viaNodeId === node.id) continue;
           const newMetric = rEntry.metric + 1;
           if (newMetric > 15) continue;
-          const key = `${localVrf}|${rEntry.prefix}/${rEntry.prefixLen}`;
+          let advPrefix = rEntry.prefix;
+          let advPrefixLen = rEntry.prefixLen;
+          // RFC 1058 RIPv1: auto-summarize across major classful network boundaries
+          if (isRipV1 && rEntry.prefixLen > 0) {
+            const routeClassful = getClassfulBoundary(rEntry.prefix);
+            if (
+              routeClassful &&
+              linkClassful &&
+              routeClassful.network !== linkClassful.network &&
+              rEntry.prefixLen > routeClassful.prefixLen
+            ) {
+              advPrefix = routeClassful.network;
+              advPrefixLen = routeClassful.prefixLen;
+            }
+          }
+          const key = `${localVrf}|${advPrefix}/${advPrefixLen}`;
           const existing = myMap.get(key);
           if (!existing || newMetric < existing.metric) {
             myMap.set(key, {
-              prefix: rEntry.prefix,
-              prefixLen: rEntry.prefixLen,
+              prefix: advPrefix,
+              prefixLen: advPrefixLen,
               vrf: localVrf,
               metric: newMetric,
               nextHop: adj.remoteIp,
@@ -3446,7 +3626,7 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           const best = resolvable[0];
           const winners = resolvable
             .filter((e) => e.ad === best.ad && e.metric === best.metric)
-            .slice(0, Math.max(1, node.maxPaths));
+            .slice(0, Math.max(1, node.maxPaths ?? 4));
 
           const isEcmp = winners.length > 1;
           for (const w of winners) {
@@ -3579,21 +3759,15 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
                 adj.remoteIface.bfdMultiplier
               )})`
             : '';
-        const localOspfPrio = adj.localIface.ospfPriority ?? 1;
-        const remoteOspfPrio = adj.remoteIface.ospfPriority ?? 1;
-        const localRid = getNodeRouterId(node, adj.localIface.vrf || 'default');
         const remoteRid = getNodeRouterId(remoteNode, adj.remoteIface.vrf || 'default');
         const isOspfP2p =
           adj.localIface.ospfNetworkType === 'point-to-point' ||
           adj.localIface.ospfNetworkType === 'point-to-multipoint';
-        let ospfRole: NeighborStatus['ospfRole'] = isOspfP2p ? 'P2P' : 'DROther';
-        const bothPrioZero = !isOspfP2p && localOspfPrio === 0 && remoteOspfPrio === 0;
-        if (!isOspfP2p && remoteOspfPrio > 0) {
-          const remoteHigher =
-            remoteOspfPrio > localOspfPrio ||
-            (remoteOspfPrio === localOspfPrio && compareIpStrings(remoteRid, localRid) > 0);
-          ospfRole = remoteHigher ? 'DR' : localOspfPrio > 0 ? 'BDR' : 'DR';
-        }
+        const segElection = !isOspfP2p
+          ? electOspfSegmentRoles(node, adj, adjMap, new Map(topology.nodes.map((n) => [n.id, n])))
+          : null;
+        const ospfRole: NeighborStatus['ospfRole'] = isOspfP2p ? 'P2P' : (segElection?.remoteRole ?? 'DROther');
+        const isTwoWayOnly = Boolean(segElection?.isTwoWayOnly);
         neighbors.push({
           protocol: 'ospf',
           neighborId: remoteRid,
@@ -3604,7 +3778,7 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
               ? 'Down'
               : mtuMismatch
                 ? 'ExStart'
-                : bothPrioZero
+                : isTwoWayOnly
                   ? '2-Way'
                   : 'FULL',
           ospfRole,
@@ -3617,8 +3791,8 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
                   ? `Area type mismatch (${lAreaType}/${rAreaType})`
                   : mtuMismatch
                     ? `MTU mismatch (${lMtu}/${rMtu})`
-                    : bothPrioZero
-                      ? `Area ${adj.localIface.ospfArea} (2-Way, Priority 0)`
+                    : isTwoWayOnly
+                      ? `Area ${adj.localIface.ospfArea} (2-Way, DROther)`
                       : `Area ${adj.localIface.ospfArea}${isOspfP2p ? ' (P2P)' : ` (${ospfRole})`}${customTimerTag}${ospfBfdTag}`,
         });
       }
@@ -4395,7 +4569,7 @@ export function tracePacket(
       }
     }
 
-    const matches: RibEntry[] | null =
+    let matches: RibEntry[] | null =
       af === 4
         ? buildActiveTrie(res.rib, currentVrf).longestPrefixMatch(ipToUint32(currentDstIp))
         : buildActiveTrie6(res.rib, currentVrf).longestPrefixMatch(ip6ToBigInt(currentDstIp));
@@ -4476,36 +4650,91 @@ export function tracePacket(
             : undefined,
         };
       }
-      hops.push({
-        nodeId: node.id,
-        hostname: node.hostname,
-        vrf: currentVrf,
-        ingressInterface: currentIngressIf,
-        egressInterface: '-',
-        nextHop: '-',
-        matchedPrefix: 'none',
-        protocol: 'static',
-        ad: 0,
-        metric: 0,
-        status: 'dropped',
-        routeStatus: 'no-route',
-        natApplied: dnat.note,
-      });
-      return {
-        dstIp,
-        srcIp: currentSrcIp,
-        srcNodeId,
-        srcInterfaceId: opts?.srcInterfaceId,
-        vrf,
-        hops,
-        outcome: 'dropped',
-        blockedNodeId: node.id,
-        failureReason: `No route to ${currentDstIp} on ${node.hostname} [${currentVrf}]`,
-      };
+      // Before dropping for no-route, check if a Policy-Based Route (PBR) matches and has a reachable next-hop
+      const adjsNoRoute: Adjacency[] = adjMap.get(node.id) ?? [];
+      let pbrOverrideBest: RibEntry | null = null;
+      let pbrOverrideNote: string | undefined;
+      if (node.pbrRules && node.pbrRules.length > 0) {
+        for (const rule of node.pbrRules) {
+          if (rule.ingressInterface && currentIngressIf && rule.ingressInterface.toLowerCase() !== currentIngressIf.toLowerCase()) continue;
+          if (rule.srcCidr && rule.srcCidr !== '0.0.0.0/0' && rule.srcCidr !== '::/0') {
+            if (!currentSrcIp) continue;
+            const srcMatch = af === 4 ? isIpInCidr(currentSrcIp, rule.srcCidr) : isIp6InCidr(currentSrcIp, rule.srcCidr);
+            if (!srcMatch) continue;
+          }
+          if (rule.matchPrefix && rule.matchPrefix !== '0.0.0.0/0' && rule.matchPrefix !== '::/0') {
+            const dstMatch = af === 4 ? isIpInCidr(currentDstIp, rule.matchPrefix) : isIp6InCidr(currentDstIp, rule.matchPrefix);
+            if (!dstMatch) continue;
+          }
+          if (rule.protocol && rule.protocol !== 'any' && rule.protocol !== l4Proto) continue;
+          if (rule.dstPort !== undefined && rule.dstPort !== dstPort) continue;
+
+          const directAdj = adjsNoRoute.find(
+            (a) =>
+              (!rule.interfaceName || a.localIface.name.toLowerCase() === rule.interfaceName.toLowerCase()) &&
+              (a.remoteIp === rule.nextHop || a.remoteIp6 === rule.nextHop)
+          );
+          const resolvedNh = directAdj
+            ? { resolvable: true, egressInterface: directAdj.localIface.name }
+            : resolveNextHop(rule.nextHop, rule.interfaceName, currentVrf, res.rib, node);
+          if (!resolvedNh.resolvable) continue;
+          const egressName = resolvedNh.egressInterface || rule.interfaceName || '';
+          const outIfObj = node.interfaces.find((i) => i.name.toLowerCase() === egressName.toLowerCase());
+          if (outIfObj?.shutdown) continue;
+          if (!directAdj && egressName && !adjsNoRoute.some((a) => a.localIface.name.toLowerCase() === egressName.toLowerCase())) continue;
+
+          pbrOverrideBest = {
+            af,
+            prefix: af === 4 ? '0.0.0.0' : '::',
+            prefixLen: 0,
+            vrf: currentVrf,
+            protocol: 'static',
+            ad: 0,
+            metric: 0,
+            nextHop: rule.nextHop,
+            egressInterface: egressName,
+            active: true,
+            ecmp: false,
+          };
+          pbrOverrideNote = `PBR "${rule.name}" -> ${rule.nextHop}`;
+          break;
+        }
+      }
+      if (!pbrOverrideBest) {
+        hops.push({
+          nodeId: node.id,
+          hostname: node.hostname,
+          vrf: currentVrf,
+          ingressInterface: currentIngressIf,
+          egressInterface: '-',
+          nextHop: '-',
+          matchedPrefix: 'none',
+          protocol: 'static',
+          ad: 0,
+          metric: 0,
+          status: 'dropped',
+          routeStatus: 'no-route',
+          natApplied: dnat.note,
+        });
+        return {
+          dstIp,
+          srcIp: currentSrcIp,
+          srcNodeId,
+          srcInterfaceId: opts?.srcInterfaceId,
+          vrf,
+          hops,
+          outcome: 'dropped',
+          blockedNodeId: node.id,
+          failureReason: `No route to ${currentDstIp} on ${node.hostname} [${currentVrf}]`,
+        };
+      }
+      if (matches) matches.push(pbrOverrideBest);
+      else matches = [pbrOverrideBest];
+      void pbrOverrideNote;
     }
 
-    const best: RibEntry = matches[0];
-    const ecmpMatches = matches.filter(
+    const best: RibEntry = matches![0];
+    const ecmpMatches = matches!.filter(
       (m) => m.prefix === best.prefix && m.prefixLen === best.prefixLen
     );
     const ecmpPaths =
@@ -4526,23 +4755,40 @@ export function tracePacket(
       node.pbrRules &&
       node.pbrRules.length > 0
     ) {
-      const matchedPbr = node.pbrRules.find((rule) => {
-        if (rule.interfaceName && currentIngressIf && rule.interfaceName !== currentIngressIf) {
-          return false;
+      for (const rule of node.pbrRules) {
+        if (rule.ingressInterface && currentIngressIf && rule.ingressInterface.toLowerCase() !== currentIngressIf.toLowerCase()) {
+          continue;
         }
-        return af === 4 ? isIpInCidr(currentDstIp, rule.matchPrefix) : isIp6InCidr(currentDstIp, rule.matchPrefix);
-      });
-      if (matchedPbr) {
-        selectedNextHop = matchedPbr.nextHop;
-        if (matchedPbr.interfaceName) {
-          selectedEgressIf = matchedPbr.interfaceName;
-        } else {
-          const pbrAdj = adjs.find(
-            (a) => a.remoteIp === matchedPbr.nextHop || a.remoteIp6 === matchedPbr.nextHop
-          );
-          if (pbrAdj) selectedEgressIf = pbrAdj.localIface.name;
+        if (rule.srcCidr && rule.srcCidr !== '0.0.0.0/0' && rule.srcCidr !== '::/0') {
+          if (!currentSrcIp) continue;
+          const srcMatch = af === 4 ? isIpInCidr(currentSrcIp, rule.srcCidr) : isIp6InCidr(currentSrcIp, rule.srcCidr);
+          if (!srcMatch) continue;
         }
-        pbrAppliedNote = `PBR "${matchedPbr.name}" -> ${selectedNextHop}`;
+        if (rule.matchPrefix && rule.matchPrefix !== '0.0.0.0/0' && rule.matchPrefix !== '::/0') {
+          const dstMatch = af === 4 ? isIpInCidr(currentDstIp, rule.matchPrefix) : isIp6InCidr(currentDstIp, rule.matchPrefix);
+          if (!dstMatch) continue;
+        }
+        if (rule.protocol && rule.protocol !== 'any' && rule.protocol !== l4Proto) continue;
+        if (rule.dstPort !== undefined && rule.dstPort !== dstPort) continue;
+
+        const directAdj = adjs.find(
+          (a) =>
+            (!rule.interfaceName || a.localIface.name.toLowerCase() === rule.interfaceName.toLowerCase()) &&
+            (a.remoteIp === rule.nextHop || a.remoteIp6 === rule.nextHop)
+        );
+        const resolvedNh = directAdj
+          ? { resolvable: true, egressInterface: directAdj.localIface.name }
+          : resolveNextHop(rule.nextHop, rule.interfaceName, currentVrf, res.rib, node);
+        if (!resolvedNh.resolvable) continue;
+        const egressName = resolvedNh.egressInterface || rule.interfaceName || '';
+        const outIfObj = node.interfaces.find((i) => i.name.toLowerCase() === egressName.toLowerCase());
+        if (outIfObj?.shutdown) continue;
+        if (!directAdj && egressName && !adjs.some((a) => a.localIface.name.toLowerCase() === egressName.toLowerCase())) continue;
+
+        selectedNextHop = rule.nextHop;
+        if (egressName) selectedEgressIf = egressName;
+        pbrAppliedNote = `PBR "${rule.name}" -> ${selectedNextHop}`;
+        break;
       }
     }
 

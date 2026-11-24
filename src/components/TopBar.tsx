@@ -180,6 +180,11 @@ export const TopBar: React.FC = () => {
 
   const handleShare = async () => {
     const url = getShareUrl();
+    const hashPayload = url.split('#s=')[1] ?? '';
+    if (hashPayload.length > 500_000) {
+      msgApi.warning('Topology exceeds the 500 KB share URL limit; use Export JSON instead.');
+      return;
+    }
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);

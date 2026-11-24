@@ -40,30 +40,44 @@ export function computeRibDiff(
     const cNode = current.nodes[nodeId];
     const hostname = cNode?.hostname ?? bNode?.hostname ?? nodeId;
 
-    const bMap = new Map<string, RibEntry>();
+    const bMap = new Map<string, RibEntry[]>();
     for (const r of bNode?.rib ?? []) {
-      if (r.active) bMap.set(entryKey(r), r);
+      if (!r.active) continue;
+      const k = entryKey(r);
+      const list = bMap.get(k);
+      if (list) list.push(r);
+      else bMap.set(k, [r]);
     }
 
-    const cMap = new Map<string, RibEntry>();
+    const cMap = new Map<string, RibEntry[]>();
     for (const r of cNode?.rib ?? []) {
-      if (r.active) cMap.set(entryKey(r), r);
+      if (!r.active) continue;
+      const k = entryKey(r);
+      const list = cMap.get(k);
+      if (list) list.push(r);
+      else cMap.set(k, [r]);
     }
 
     const keys = new Set([...bMap.keys(), ...cMap.keys()]);
     for (const key of keys) {
-      const before = bMap.get(key);
-      const after = cMap.get(key);
+      const beforeList = bMap.get(key);
+      const afterList = cMap.get(key);
+      const before = beforeList?.[0];
+      const after = afterList?.[0];
       const sep = key.indexOf('|');
       const vrf = sep === -1 ? 'default' : key.slice(0, sep);
       const cidr = sep === -1 ? key : key.slice(sep + 1);
 
-      if (!before && after) {
+      if (!beforeList && afterList) {
         items.push({ nodeId, hostname, vrf, cidr, status: 'added', after });
-      } else if (before && !after) {
+      } else if (beforeList && !afterList) {
         items.push({ nodeId, hostname, vrf, cidr, status: 'removed', before });
-      } else if (before && after && entryFingerprint(before) !== entryFingerprint(after)) {
-        items.push({ nodeId, hostname, vrf, cidr, status: 'modified', before, after });
+      } else if (beforeList && afterList) {
+        const beforeFp = beforeList.map(entryFingerprint).sort().join('||');
+        const afterFp = afterList.map(entryFingerprint).sort().join('||');
+        if (beforeFp !== afterFp) {
+          items.push({ nodeId, hostname, vrf, cidr, status: 'modified', before, after });
+        }
       }
     }
   }

@@ -671,7 +671,11 @@ export function formatPrimaryCli(node: NodeConfig, result: NodeRoutingResult): s
   switch (node.vendor) {
     case 'cisco-ios-xe':
     case 'cisco-nx-os':
+    case 'cisco-ios-xr':
     case 'arista-eos':
+    case 'aruba-aos-cx':
+    case 'vyos':
+    case 'checkpoint-gaia':
     case 'mpls-cloud':
     case 'internet-cloud':
     case 'aws-cloud':
@@ -827,6 +831,85 @@ export function formatRunningConfig(node: NodeConfig): string {
     return lines.join('\n');
   }
 
+  if (node.vendor === 'vyos') {
+    const lines: string[] = [
+      `# VyOS Configuration (${node.hostname})`,
+      `set system host-name '${node.hostname}'`,
+    ];
+    for (const iface of node.interfaces) {
+      if (iface.cidr) lines.push(`set interfaces ethernet ${iface.name} address '${iface.cidr}'`);
+      if (iface.cidr6) lines.push(`set interfaces ethernet ${iface.name} address '${iface.cidr6}'`);
+      if (iface.vrf && iface.vrf !== 'default') {
+        lines.push(`set interfaces ethernet ${iface.name} vrf '${iface.vrf}'`);
+      }
+      if (iface.shutdown) lines.push(`set interfaces ethernet ${iface.name} disable`);
+    }
+    for (const sr of node.staticRoutes) {
+      const vrfPfx = sr.vrf && sr.vrf !== 'default' ? `vrf name ${sr.vrf} ` : '';
+      lines.push(`set ${vrfPfx}protocols static route ${sr.prefix} next-hop ${sr.nextHop}`);
+    }
+    if (node.ospf.enabled) {
+      lines.push(`set protocols ospf parameters router-id '${node.routerId}'`);
+      for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
+        lines.push(`set protocols ospf interface ${iface.name} area '${iface.ospfArea}'`);
+        if (iface.passive) lines.push(`set protocols ospf interface ${iface.name} passive`);
+      }
+    }
+    if (node.isis?.enabled) {
+      if (node.isis.net) lines.push(`set protocols isis net '${node.isis.net}'`);
+      for (const iface of node.interfaces.filter((i) => i.isisLevel)) {
+        lines.push(`set protocols isis interface ${iface.name}`);
+        if (iface.passive) lines.push(`set protocols isis interface ${iface.name} passive`);
+      }
+    }
+    if (node.rip?.enabled) {
+      for (const iface of node.interfaces.filter((i) => i.passive)) {
+        lines.push(`set protocols rip passive-interface '${iface.name}'`);
+      }
+    }
+    if (node.bgp.enabled) {
+      lines.push(`set protocols bgp system-as '${node.bgp.asn}'`);
+      lines.push(`set protocols bgp parameters router-id '${node.routerId}'`);
+      for (const p of node.bgp.peers) {
+        lines.push(`set protocols bgp neighbor ${p.peerIp} remote-as '${p.remoteAs}'`);
+        if (p.nextHopSelf) lines.push(`set protocols bgp neighbor ${p.peerIp} address-family ipv4-unicast nexthop-self`);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  if (node.vendor === 'checkpoint-gaia') {
+    const lines: string[] = [
+      `# Check Point Gaia Clish Configuration (${node.hostname})`,
+      `set hostname ${node.hostname}`,
+      `set router-id ${node.routerId}`,
+    ];
+    for (const iface of node.interfaces) {
+      const parsed = parseCidr(iface.cidr);
+      if (parsed) {
+        lines.push(`set interface ${iface.name} ipv4-address ${parsed.ip} mask-length ${parsed.prefixLen}`);
+      }
+      lines.push(`set interface ${iface.name} state ${iface.shutdown ? 'off' : 'on'}`);
+    }
+    for (const sr of node.staticRoutes) {
+      lines.push(`set static-route ${sr.prefix} nexthop gateway address ${sr.nextHop} on`);
+    }
+    if (node.ospf.enabled) {
+      for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
+        lines.push(`set ospf instance default interface ${iface.name} area 0.0.0.${iface.ospfArea} on`);
+        if (iface.passive) lines.push(`set ospf instance default interface ${iface.name} passive on`);
+      }
+    }
+    if (node.bgp.enabled) {
+      lines.push(`set as ${node.bgp.asn}`);
+      for (const p of node.bgp.peers) {
+        lines.push(`set bgp external remote-as ${p.remoteAs} on`);
+        lines.push(`set bgp external remote-as ${p.remoteAs} peer ${p.peerIp} on`);
+      }
+    }
+    return lines.join('\n');
+  }
+
   if (node.vendor === 'juniper-junos') {
     const lines: string[] = [
       `# Juniper Junos Set Configuration (${node.hostname})`,
@@ -919,6 +1002,26 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`    edit ${idx + 1}`);
         lines.push(`        set dst ${sr.prefix}`);
         lines.push(`        set gateway ${sr.nextHop}`);
+        lines.push(`    next`);
+      });
+      lines.push(`end`);
+    }
+    if ((node.pbrRules?.length ?? 0) > 0) {
+      lines.push(`config router policy`);
+      node.pbrRules!.forEach((p, idx) => {
+        lines.push(`    edit ${idx + 1}`);
+        if (p.ingressInterface) lines.push(`        set input-device "${p.ingressInterface}"`);
+        if (p.srcCidr) lines.push(`        set src "${p.srcCidr}"`);
+        if (p.matchPrefix) lines.push(`        set dst "${p.matchPrefix}"`);
+        if (p.protocol === 'tcp') lines.push(`        set protocol 6`);
+        else if (p.protocol === 'udp') lines.push(`        set protocol 17`);
+        else if (p.protocol === 'icmp') lines.push(`        set protocol 1`);
+        if (p.dstPort !== undefined) {
+          lines.push(`        set start-port ${p.dstPort}`);
+          lines.push(`        set end-port ${p.dstPort}`);
+        }
+        if (p.interfaceName) lines.push(`        set output-device "${p.interfaceName}"`);
+        if (p.nextHop) lines.push(`        set gateway ${p.nextHop}`);
         lines.push(`    next`);
       });
       lines.push(`end`);
@@ -1100,6 +1203,12 @@ export function formatRunningConfig(node: NodeConfig): string {
       }
     }
     if (node.eigrp?.enabled) {
+      if (iface.eigrpBw !== undefined) {
+        lines.push(` bandwidth ${iface.eigrpBw}`);
+      }
+      if (iface.eigrpDelay !== undefined) {
+        lines.push(` delay ${Math.max(1, Math.round(iface.eigrpDelay / 10))}`);
+      }
       if (iface.eigrpHelloInterval !== undefined) {
         lines.push(` ip hello-interval eigrp ${node.eigrp.asn} ${iface.eigrpHelloInterval}`);
       }
@@ -1220,7 +1329,10 @@ export function formatRunningConfig(node: NodeConfig): string {
   for (const t of node.tracks ?? []) {
     lines.push(`track ${t.id} ip route ${t.targetIp} 255.255.255.255 reachability`);
   }
-  if (node.staticRoutes.length > 0 || (node.tracks?.length ?? 0) > 0) lines.push(`!`);
+  for (const vl of node.vrfLeaks ?? []) {
+    lines.push(`vrf-leak ${vl.fromVrf} to ${vl.toVrf}`);
+  }
+  if (node.staticRoutes.length > 0 || (node.tracks?.length ?? 0) > 0 || (node.vrfLeaks?.length ?? 0) > 0) lines.push(`!`);
 
   if (node.ospf.enabled) {
     lines.push(`router ospf 1`, ` router-id ${node.routerId}`);
@@ -1341,6 +1453,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       const parsed = parseCidr(sum.prefix);
       if (parsed) lines.push(` summary-address ${parsed.network} ${uint32ToIp(parsed.maskUint32)}`);
     }
+    for (const lk of node.isis.leakL2ToL1 ?? []) {
+      lines.push(` redistribute isis ip level-2 into level-1 prefix ${lk.prefix}`);
+    }
     for (const net of node.isis.networks) {
       lines.push(` ! advertise ${net.prefix}${net.level ? ` (${net.level})` : ''}`);
     }
@@ -1416,7 +1531,7 @@ export function formatRunningConfig(node: NodeConfig): string {
     lines.push(
       `router bgp ${node.bgp.asn}`,
       ` bgp router-id ${node.routerId}`,
-      ` maximum-paths ${node.maxPaths}`
+      ` maximum-paths ${node.maxPaths ?? 4}`
     );
     if (node.bgp.clusterId?.trim()) {
       lines.push(` bgp cluster-id ${node.bgp.clusterId.trim()}`);

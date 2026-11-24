@@ -14,7 +14,7 @@ import {
   formatRunningConfig,
   formatSecondaryCli,
 } from '../engine/formatters';
-import { importTopologyFromText, validateRunningConfig } from '../engine/importer';
+import { autoFormatRunningConfig, importTopologyFromText, validateRunningConfig } from '../engine/importer';
 import { VENDOR_METADATA } from '../engine/vendorProfiles';
 import { useSimStore } from '../store/useSimStore';
 import { LfibEntry, MrouteEntry, NeighborStatus, RibEntry } from '../types/network';
@@ -636,6 +636,16 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 <Tag color="green" className="!m-0">Valid Syntax</Tag>
               )}
               {configSaved && <Tag color="cyan" className="!m-0">Applied</Tag>}
+              <Button
+                size="small"
+                onClick={() => {
+                  const formatted = autoFormatRunningConfig(draftConfig);
+                  setDraftConfig(formatted);
+                  setConfigDirty(formatted !== formattedConfig);
+                }}
+              >
+                Format
+              </Button>
               {configDirty && (
                 <Button
                   size="small"

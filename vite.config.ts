@@ -27,4 +27,17 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(resolveAppVersion()),
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'vendor-antd', test: /node_modules[\\/](antd|@ant-design|rc-)/ },
+            { name: 'vendor-xyflow', test: /node_modules[\\/]@xyflow/ },
+            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|zustand)/ },
+          ],
+        },
+      },
+    },
+  },
 });

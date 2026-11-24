@@ -40,10 +40,11 @@ function toYaml(value: unknown, indent = 0): string {
     if (entries.length === 0) return '{}';
     return entries
       .map(([k, v]) => {
-        if (v !== null && typeof v === 'object' && (!Array.isArray(v) || v.length > 0)) {
-          if (Array.isArray(v)) {
-            return `${pad}${k}:\n${toYaml(v, indent + 2)}`;
-          }
+        if (Array.isArray(v)) {
+          if (v.length === 0) return `${pad}${k}: []`;
+          return `${pad}${k}:\n${toYaml(v, indent + 2)}`;
+        }
+        if (v !== null && typeof v === 'object') {
           const objEntries = Object.entries(v as Record<string, unknown>).filter(
             ([, ov]) => ov !== undefined
           );

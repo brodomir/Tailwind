@@ -1,14 +1,18 @@
 export type VendorProfile =
   | 'cisco-ios-xe'
   | 'cisco-nx-os'
+  | 'cisco-ios-xr'
   | 'cisco-sdwan'
   | 'prisma-sdwan'
   | 'pan-os'
   | 'forcepoint-ngfw'
   | 'arista-eos'
+  | 'aruba-aos-cx'
   | 'juniper-junos'
   | 'mikrotik-routeros'
   | 'fortigate'
+  | 'checkpoint-gaia'
+  | 'vyos'
   | 'mpls-cloud'
   | 'internet-cloud'
   | 'aws-cloud'
@@ -172,10 +176,14 @@ export interface IsisNetworkConfig {
 export interface PbrRuleConfig {
   id: string;
   name: string;
+  srcCidr?: string;
   matchPrefix: string;
   nextHop: string;
   multiLinkPool?: string;
+  ingressInterface?: string;
   interfaceName?: string;
+  protocol?: L4Protocol;
+  dstPort?: number;
 }
 
 export type L4Protocol = 'any' | 'tcp' | 'udp' | 'icmp';

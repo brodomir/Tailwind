@@ -311,22 +311,48 @@ export const useSimStore = create<SimStore>((set, get) => {
     past: [],
     future: [],
     undo: () => {
-      const { past, topology, future } = get();
+      const { past, topology, future, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId } = get();
       if (past.length === 0) return;
       const previous = past[past.length - 1];
+      const nextSelected = previous.nodes.some((n) => n.id === selectedNodeId)
+        ? selectedNodeId
+        : (previous.nodes[0]?.id ?? null);
+      const nextTraceSrc = previous.nodes.some((n) => n.id === traceSrcNodeId)
+        ? traceSrcNodeId
+        : (previous.nodes[0]?.id ?? '');
+      const srcNode = previous.nodes.find((n) => n.id === nextTraceSrc);
+      const nextTraceIf = srcNode?.interfaces.some((i) => i.id === traceSrcInterfaceId)
+        ? traceSrcInterfaceId
+        : undefined;
       set({
         topology: previous,
+        selectedNodeId: nextSelected,
+        traceSrcNodeId: nextTraceSrc,
+        traceSrcInterfaceId: nextTraceIf,
         past: past.slice(0, -1),
         future: [structuredClone(topology), ...future].slice(0, 30),
       });
       triggerSolve(previous);
     },
     redo: () => {
-      const { past, topology, future } = get();
+      const { past, topology, future, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId } = get();
       if (future.length === 0) return;
       const next = future[0];
+      const nextSelected = next.nodes.some((n) => n.id === selectedNodeId)
+        ? selectedNodeId
+        : (next.nodes[0]?.id ?? null);
+      const nextTraceSrc = next.nodes.some((n) => n.id === traceSrcNodeId)
+        ? traceSrcNodeId
+        : (next.nodes[0]?.id ?? '');
+      const srcNode = next.nodes.find((n) => n.id === nextTraceSrc);
+      const nextTraceIf = srcNode?.interfaces.some((i) => i.id === traceSrcInterfaceId)
+        ? traceSrcInterfaceId
+        : undefined;
       set({
         topology: next,
+        selectedNodeId: nextSelected,
+        traceSrcNodeId: nextTraceSrc,
+        traceSrcInterfaceId: nextTraceIf,
         past: [...past, structuredClone(topology)].slice(-30),
         future: future.slice(1),
       });
@@ -648,8 +674,9 @@ export const useSimStore = create<SimStore>((set, get) => {
           prefixLists: parsedNode.prefixLists,
           routeMaps: parsedNode.routeMaps,
           vrfLeaks: parsedNode.vrfLeaks,
-          aclRules: parsedNode.aclRules,
-          natRules: parsedNode.natRules,
+          pbrRules: parsedNode.pbrRules?.length ? parsedNode.pbrRules : existing.pbrRules,
+          aclRules: parsedNode.aclRules?.length ? parsedNode.aclRules : existing.aclRules,
+          natRules: parsedNode.natRules?.length ? parsedNode.natRules : existing.natRules,
           fhrpGroups: parsedNode.fhrpGroups,
         };
       });

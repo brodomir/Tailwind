@@ -1557,4 +1557,241 @@ describe('Additional IETF & IEEE Standards (MPLS/SR, RSTP/LLDP, PIM-SM, FlowSpec
     expect(x1Rib.some((r) => r.prefix === '172.16.255.0' && r.protocol === 'lisp')).toBe(false);
     expect(x1Rib.some((r) => r.prefix === '172.16.200.0' && r.protocol === 'lisp')).toBe(false);
   });
+
+  it('enforces protocol edge cases (EIGRP summary outbound suppression, RIPv1 classful auto-summary, BGP deterministic-med, OSPF NSSA ABR translator election)', () => {
+    // 1. EIGRP summary outbound suppression + RIPv1 classful auto-summarization
+    const igpEdgeTopo: TopologyState = {
+      nodes: [
+        {
+          id: 'r1',
+          hostname: 'R1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'r1-g0', name: 'Gi0/0', cidr: '192.168.1.1/30', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          eigrp: {
+            enabled: true,
+            asn: 100,
+            summaries: [{ id: 'es1', prefix: '10.10.0.0/16' }],
+            networks: [{ id: 'en1', prefix: '10.10.1.0/24' }],
+          },
+          rip: {
+            enabled: true,
+            version: 1,
+            networks: [{ id: 'rn1', prefix: '172.16.5.0/24' }],
+          },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'r2',
+          hostname: 'R2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'r2-g0', name: 'Gi0/0', cidr: '192.168.1.2/30', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          eigrp: { enabled: true, asn: 100, networks: [] },
+          rip: { enabled: true, version: 1, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [{ id: 'l12', sourceNodeId: 'r1', sourceInterfaceId: 'r1-g0', targetNodeId: 'r2', targetInterfaceId: 'r2-g0' }],
+    };
+
+    const igpRes = solveTopology(igpEdgeTopo);
+    const r2Rib = igpRes.nodes['r2']?.rib ?? [];
+    // EIGRP summary 10.10.0.0/16 is learned, while more-specific 10.10.1.0/24 is suppressed outbound
+    expect(r2Rib.some((r) => r.prefix === '10.10.0.0' && r.prefixLen === 16 && r.protocol === 'eigrp')).toBe(true);
+    expect(r2Rib.some((r) => r.prefix === '10.10.1.0' && r.prefixLen === 24 && r.protocol === 'eigrp')).toBe(false);
+    // RIPv1 auto-summarizes 172.16.5.0/24 across 192.168.1.0/30 boundary to Class B 172.16.0.0/16
+    expect(r2Rib.some((r) => r.prefix === '172.16.0.0' && r.prefixLen === 16 && r.protocol === 'rip')).toBe(true);
+    expect(r2Rib.some((r) => r.prefix === '172.16.5.0' && r.prefixLen === 24 && r.protocol === 'rip')).toBe(false);
+
+    // 2. OSPF NSSA Type-7 -> Type-5 ABR translator election (highest Router-ID ABR2 translates, not ABR1)
+    const nssaTopo: TopologyState = {
+      nodes: [
+        {
+          id: 'nssa-asbr',
+          hostname: 'NSSA-ASBR',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.0.0.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'na-0', name: 'Gi0/0', cidr: '10.1.0.1/30', vrf: 'default', ospfArea: 1 },
+            { id: 'na-1', name: 'Gi0/1', cidr: '10.2.0.1/30', vrf: 'default', ospfArea: 1 },
+          ],
+          staticRoutes: [{ id: 'sr-n', vrf: 'default', prefix: '198.51.100.0/24', nextHop: '0.0.0.0', interfaceName: 'Null0' }],
+          ospf: { enabled: true, areaTypes: { 1: 'nssa' }, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [{ id: 'rn', from: 'static', to: 'ospf', metric: 20, metricType: 'E2' }],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'abr-low',
+          hostname: 'ABR-LOW',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.0.0.10',
+          position: { x: 100, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'al-0', name: 'Gi0/0', cidr: '10.1.0.2/30', vrf: 'default', ospfArea: 1 },
+            { id: 'al-1', name: 'Gi0/1', cidr: '10.10.0.1/30', vrf: 'default', ospfArea: 0 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, areaTypes: { 1: 'nssa' }, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'abr-high',
+          hostname: 'ABR-HIGH',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.0.0.20',
+          position: { x: 100, y: 100 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'ah-0', name: 'Gi0/0', cidr: '10.2.0.2/30', vrf: 'default', ospfArea: 1 },
+            { id: 'ah-1', name: 'Gi0/1', cidr: '10.20.0.1/30', vrf: 'default', ospfArea: 0 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, areaTypes: { 1: 'nssa' }, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'core',
+          hostname: 'CORE0',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.0.0.99',
+          position: { x: 200, y: 50 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'c-0', name: 'Gi0/0', cidr: '10.10.0.2/30', vrf: 'default', ospfArea: 0 },
+            { id: 'c-1', name: 'Gi0/1', cidr: '10.20.0.2/30', vrf: 'default', ospfArea: 0 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'ln1', sourceNodeId: 'nssa-asbr', sourceInterfaceId: 'na-0', targetNodeId: 'abr-low', targetInterfaceId: 'al-0' },
+        { id: 'ln2', sourceNodeId: 'nssa-asbr', sourceInterfaceId: 'na-1', targetNodeId: 'abr-high', targetInterfaceId: 'ah-0' },
+        { id: 'lc1', sourceNodeId: 'abr-low', sourceInterfaceId: 'al-1', targetNodeId: 'core', targetInterfaceId: 'c-0' },
+        { id: 'lc2', sourceNodeId: 'abr-high', sourceInterfaceId: 'ah-1', targetNodeId: 'core', targetInterfaceId: 'c-1' },
+      ],
+    };
+
+    const nssaRes = solveTopology(nssaTopo);
+    const coreExt = nssaRes.nodes['core']?.rib.filter((r) => r.prefix === '198.51.100.0' && r.active) ?? [];
+    expect(coreExt).toHaveLength(1);
+    expect(coreExt[0]?.nextHop).toBe('10.20.0.1'); // Translated by ABR-HIGH (10.0.0.20), not ABR-LOW
+
+    // 3. Segment-wide OSPF DR/BDR/DROther election across a 4-router shared L2 switch
+    const l2OspfTopo: TopologyState = {
+      nodes: [
+        {
+          id: 'sw1',
+          hostname: 'L2-SW',
+          vendor: 'cisco-ios-xe',
+          routerId: '0.0.0.1',
+          position: { x: 100, y: 100 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'sw-1', name: 'Gi0/1', cidr: '', vrf: 'default', vlanId: 10 },
+            { id: 'sw-2', name: 'Gi0/2', cidr: '', vrf: 'default', vlanId: 10 },
+            { id: 'sw-3', name: 'Gi0/3', cidr: '', vrf: 'default', vlanId: 10 },
+            { id: 'sw-4', name: 'Gi0/4', cidr: '', vrf: 'default', vlanId: 10 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        ...[
+          { id: 'r1', rid: '10.0.0.1', ip: '10.10.10.1/24', prio: 100 },
+          { id: 'r2', rid: '10.0.0.2', ip: '10.10.10.2/24', prio: 50 },
+          { id: 'r3', rid: '10.0.0.3', ip: '10.10.10.3/24', prio: 1 },
+          { id: 'r4', rid: '10.0.0.4', ip: '10.10.10.4/24', prio: 1 },
+        ].map((cfg) => ({
+          id: cfg.id,
+          hostname: cfg.id.toUpperCase(),
+          vendor: 'cisco-ios-xe' as const,
+          routerId: cfg.rid,
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: `${cfg.id}-g0`, name: 'Gi0/0', cidr: cfg.ip, vrf: 'default', vlanId: 10, ospfArea: 0, ospfPriority: cfg.prio },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        })),
+      ],
+      links: [
+        { id: 'ls1', sourceNodeId: 'r1', sourceInterfaceId: 'r1-g0', targetNodeId: 'sw1', targetInterfaceId: 'sw-1', linkType: 'layer2' },
+        { id: 'ls2', sourceNodeId: 'r2', sourceInterfaceId: 'r2-g0', targetNodeId: 'sw1', targetInterfaceId: 'sw-2', linkType: 'layer2' },
+        { id: 'ls3', sourceNodeId: 'r3', sourceInterfaceId: 'r3-g0', targetNodeId: 'sw1', targetInterfaceId: 'sw-3', linkType: 'layer2' },
+        { id: 'ls4', sourceNodeId: 'r4', sourceInterfaceId: 'r4-g0', targetNodeId: 'sw1', targetInterfaceId: 'sw-4', linkType: 'layer2' },
+      ],
+    };
+
+    const l2Res = solveTopology(l2OspfTopo);
+    const r3Nbrs = l2Res.nodes['r3']?.neighbors?.filter((n) => n.protocol === 'ospf') ?? [];
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.1')?.ospfRole).toBe('DR');
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.1')?.state).toBe('FULL');
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.2')?.ospfRole).toBe('BDR');
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.2')?.state).toBe('FULL');
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.4')?.ospfRole).toBe('DROther');
+    expect(r3Nbrs.find((n) => n.neighborId === '10.0.0.4')?.state).toBe('2-Way');
+  });
 });

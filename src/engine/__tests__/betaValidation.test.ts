@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { PRESET_TOPOLOGIES } from '../../data/presets';
 import { useSimStore } from '../../store/useSimStore';
-import { NodeConfig, VendorProfile } from '../../types/network';
+import { NodeConfig, TopologyState, VendorProfile } from '../../types/network';
 import { computeRibDiff } from '../diff';
 import { buildAutomationBundleZip } from '../exportBundle';
 import { formatPrimaryCli, formatRunningConfig } from '../formatters';
 import { importTopologyFromText, validateRunningConfig } from '../importer';
-import { runFailoverMatrix, runPathTestSuite, solveTopology } from '../solver';
+import { runFailoverMatrix, runPathTestSuite, solveTopology, tracePacket } from '../solver';
 import { VENDOR_CAPABILITIES, VENDOR_METADATA } from '../vendorProfiles';
 
 describe('Beta Release 5-Pass Feature Validation', () => {
@@ -37,9 +37,9 @@ describe('Beta Release 5-Pass Feature Validation', () => {
     }
   }, 20000);
 
-  it('Pass 2: validates VENDOR_METADATA, VENDOR_CAPABILITIES, primary CLI, and running-config formatters for all 15 vendors', () => {
+  it('Pass 2: validates VENDOR_METADATA, VENDOR_CAPABILITIES, primary CLI, and running-config formatters for all 19 vendors', () => {
     const vendors = Object.keys(VENDOR_METADATA) as VendorProfile[];
-    expect(vendors.length).toBe(15);
+    expect(vendors.length).toBe(19);
 
     for (const vendor of vendors) {
       const meta = VENDOR_METADATA[vendor];
@@ -309,5 +309,286 @@ router bgp 65100
         expect(genIssues, `${preset.id}/${n.hostname} config validation errors`).toEqual([]);
       }
     }
+
+    // New vendor profiles: VyOS & Check Point Gaia round-trip format + import + validate
+    const vyosCfg = `set system host-name 'VYOS-EDGE-1'
+set interfaces ethernet eth0 address '10.70.0.1/30'
+set protocols ospf parameters router-id '10.70.0.1'
+set protocols ospf interface eth0 area '0'
+set protocols ospf interface eth0 passive
+set protocols bgp system-as '65700'
+set protocols bgp neighbor 10.70.0.2 remote-as '65701'`;
+    const parsedVyos = importTopologyFromText(vyosCfg).nodes[0];
+    expect(parsedVyos.vendor).toBe('vyos');
+    expect(parsedVyos.interfaces[0].passive).toBe(true);
+    expect(parsedVyos.bgp.asn).toBe(65700);
+    expect(formatRunningConfig(parsedVyos)).toContain("set protocols bgp system-as '65700'");
+
+    const gaiaCfg = `set hostname CP-FW-1
+set router-id 10.80.0.1
+set interface eth0 ipv4-address 10.80.0.1 mask-length 24
+set ospf instance default interface eth0 area 0.0.0.0 on
+set ospf instance default interface eth0 passive on
+set as 65800
+set bgp external remote-as 65801 peer 10.80.0.2 on`;
+    const parsedGaia = importTopologyFromText(gaiaCfg).nodes[0];
+    expect(parsedGaia.vendor).toBe('checkpoint-gaia');
+    expect(parsedGaia.interfaces[0].passive).toBe(true);
+    expect(parsedGaia.bgp.asn).toBe(65800);
+    expect(formatRunningConfig(parsedGaia)).toContain('set ospf instance default interface eth0 passive on');
+
+    // Messy whitespace, tabs, smart quotes, extra spaces, CIDR/mask variants in FortiGate & autoFormatRunningConfig
+    const messyForti = `config   system   global
+\tset   hostname   “FGT-MESSY”
+END
+config  system   interface
+edit  “port1”
+  set   ip   10.90.0.1/24
+  set   vrf   “CORP”
+NEXT
+end
+config  router  static
+  edit 1
+    set   dst   192.168.50.0   255.255.255.0
+    set   gateway   10.90.0.254
+end`;
+    const parsedMessyFgt = importTopologyFromText(messyForti).nodes[0];
+    expect(parsedMessyFgt.vendor).toBe('fortigate');
+    expect(parsedMessyFgt.hostname).toBe('FGT-MESSY');
+    expect(parsedMessyFgt.interfaces[0].cidr).toBe('10.90.0.1/24');
+    expect(parsedMessyFgt.interfaces[0].vrf).toBe('CORP');
+    expect(parsedMessyFgt.staticRoutes[0]?.prefix).toBe('192.168.50.0/24');
+
+    // Multi-vendor firewall security rule import (FortiGate, PAN-OS, Cisco, Junos, VyOS, MikroTik, Check Point)
+    const fgtFw = `config firewall address
+    edit "LAN"
+        set subnet 10.10.0.0 255.255.0.0
+    next
+end
+config firewall policy
+    edit 1
+        set name "Allow-HTTPS"
+        set srcintf "port1"
+        set dstintf "port2"
+        set srcaddr "LAN"
+        set dstaddr "all"
+        set service "HTTPS"
+        set action accept
+    next
+end`;
+    const fgtFwNode = importTopologyFromText(fgtFw).nodes[0];
+    expect(fgtFwNode.aclRules?.[0]).toMatchObject({
+      name: 'Allow-HTTPS',
+      action: 'allow',
+      srcZone: 'port1',
+      dstZone: 'port2',
+      srcCidr: '10.10.0.0/16',
+      dstCidr: '0.0.0.0/0',
+      protocol: 'tcp',
+      dstPort: 443,
+    });
+
+    const panFw = `set address WEB-SRV ip-netmask 10.20.1.10/32
+set rulebase security rules ALLOW-WEB from trust to untrust source 10.10.0.0/16 destination WEB-SRV service HTTPS action allow`;
+    const panFwNode = importTopologyFromText(panFw).nodes[0];
+    expect(panFwNode.aclRules?.[0]).toMatchObject({
+      name: 'ALLOW-WEB',
+      action: 'allow',
+      srcZone: 'trust',
+      dstZone: 'untrust',
+      srcCidr: '10.10.0.0/16',
+      dstCidr: '10.20.1.10/32',
+      protocol: 'tcp',
+      dstPort: 443,
+    });
+
+    const ciscoFw = `hostname FW-IOS
+ip access-list extended EDGE-IN
+ permit tcp 10.1.0.0 0.0.255.255 host 198.51.100.10 eq 443
+ deny ip any any
+!`;
+    const ciscoFwNode = importTopologyFromText(ciscoFw).nodes[0];
+    expect(ciscoFwNode.aclRules).toHaveLength(2);
+    expect(ciscoFwNode.aclRules?.[0]).toMatchObject({
+      action: 'allow',
+      srcCidr: '10.1.0.0/16',
+      dstCidr: '198.51.100.10/32',
+      protocol: 'tcp',
+      dstPort: 443,
+    });
+    expect(ciscoFwNode.aclRules?.[1]?.action).toBe('deny');
+
+    const junosFw = `set security address-book global address CORP 10.30.0.0/16
+set security policies from-zone trust to-zone dmz policy ALLOW-SSH match source-address CORP
+set security policies from-zone trust to-zone dmz policy ALLOW-SSH match destination-address 172.16.1.10/32
+set security policies from-zone trust to-zone dmz policy ALLOW-SSH match application junos-ssh
+set security policies from-zone trust to-zone dmz policy ALLOW-SSH then permit`;
+    const junosFwNode = importTopologyFromText(junosFw).nodes[0];
+    expect(junosFwNode.aclRules?.[0]).toMatchObject({
+      name: 'ALLOW-SSH',
+      action: 'allow',
+      srcZone: 'trust',
+      dstZone: 'dmz',
+      srcCidr: '10.30.0.0/16',
+      dstCidr: '172.16.1.10/32',
+      protocol: 'tcp',
+      dstPort: 22,
+    });
+
+    const vyosFw = `set firewall name WAN-IN rule 10 action drop
+set firewall name WAN-IN rule 10 protocol tcp
+set firewall name WAN-IN rule 10 destination port 23`;
+    expect(importTopologyFromText(vyosFw).nodes[0].aclRules?.[0]).toMatchObject({
+      action: 'deny',
+      protocol: 'tcp',
+      dstPort: 23,
+    });
+
+    const mtFw = `/ip firewall filter add chain=forward src-address=10.40.0.0/24 protocol=udp dst-port=53 action=accept comment="DNS"`;
+    expect(importTopologyFromText(mtFw).nodes[0].aclRules?.[0]).toMatchObject({
+      name: 'DNS',
+      action: 'allow',
+      srcCidr: '10.40.0.0/24',
+      protocol: 'udp',
+      dstPort: 53,
+    });
+
+    const cpFw = `mgmt_cli add host name WEB ip-address 10.50.0.10
+mgmt_cli add access-rule name Allow-HTTP source any destination WEB service HTTP action accept`;
+    expect(importTopologyFromText(cpFw).nodes[0].aclRules?.[0]).toMatchObject({
+      name: 'Allow-HTTP',
+      action: 'allow',
+      dstCidr: '10.50.0.10/32',
+      protocol: 'tcp',
+      dstPort: 80,
+    });
+
+    // FortiGate PBR (`config router policy`) round-trip + source-based & no-RIB trace steering
+    const fgtPbrCfg = `config system global
+    set hostname "FGT-PBR"
+end
+config system interface
+    edit "port1"
+        set ip 10.10.0.1 255.255.255.0
+    next
+    edit "port2"
+        set ip 10.20.0.1 255.255.255.252
+    next
+    edit "port3"
+        set ip 10.30.0.1 255.255.255.252
+    next
+end
+config router policy
+    edit 1
+        set input-device "port1"
+        set src "10.10.0.0/24"
+        set dst "0.0.0.0/0"
+        set protocol 6
+        set start-port 443
+        set end-port 443
+        set output-device "port3"
+        set gateway 10.30.0.2
+    next
+end`;
+    const fgtPbrNode = importTopologyFromText(fgtPbrCfg).nodes[0];
+    expect(fgtPbrNode.pbrRules?.[0]).toMatchObject({
+      ingressInterface: 'port1',
+      interfaceName: 'port3',
+      srcCidr: '10.10.0.0/24',
+      matchPrefix: '0.0.0.0/0',
+      protocol: 'tcp',
+      dstPort: 443,
+      nextHop: '10.30.0.2',
+    });
+    expect(formatRunningConfig(fgtPbrNode)).toContain('config router policy');
+    expect(formatRunningConfig(fgtPbrNode)).toContain('set output-device "port3"');
+
+    // Verify end-to-end tracePacket PBR steering (overrides default route & works even without RIB route)
+    const wan1Node = importTopologyFromText(`hostname WAN-1
+interface GigabitEthernet0/0
+ ip address 10.20.0.2 255.255.255.252
+interface Loopback0
+ ip address 8.8.8.8 255.255.255.255`).nodes[0];
+    const wan2Node = importTopologyFromText(`hostname WAN-2
+interface GigabitEthernet0/0
+ ip address 10.30.0.2 255.255.255.252
+interface Loopback0
+ ip address 8.8.8.8 255.255.255.255`).nodes[0];
+
+    const pbrTopology: TopologyState = {
+      nodes: [
+        {
+          ...fgtPbrNode,
+          id: 'fgt-pbr',
+          staticRoutes: [
+            { id: 'sr-def', prefix: '0.0.0.0/0', nextHop: '10.20.0.2', ad: 10, vrf: 'default' },
+          ],
+        },
+        { ...wan1Node, id: 'wan1' },
+        { ...wan2Node, id: 'wan2' },
+      ],
+      links: [
+        {
+          id: 'l-w1',
+          sourceNodeId: 'fgt-pbr',
+          sourceInterfaceId: fgtPbrNode.interfaces.find((i) => i.name === 'port2')!.id,
+          targetNodeId: 'wan1',
+          targetInterfaceId: wan1Node.interfaces.find((i) => i.name === 'GigabitEthernet0/0')!.id,
+        },
+        {
+          id: 'l-w2',
+          sourceNodeId: 'fgt-pbr',
+          sourceInterfaceId: fgtPbrNode.interfaces.find((i) => i.name === 'port3')!.id,
+          targetNodeId: 'wan2',
+          targetInterfaceId: wan2Node.interfaces.find((i) => i.name === 'GigabitEthernet0/0')!.id,
+        },
+      ],
+    };
+    const pbrSim = solveTopology(pbrTopology);
+    const port1Id = fgtPbrNode.interfaces.find((i) => i.name === 'port1')!.id;
+    // Matching TCP/443 from 10.10.0.50 on port1 must steer via PBR out port3 -> 10.30.0.2 (WAN-2)
+    const pbrHit = tracePacket(pbrTopology, pbrSim, 'fgt-pbr', '8.8.8.8', 'default', {
+      srcIp: '10.10.0.50',
+      srcInterfaceId: port1Id,
+      protocol: 'tcp',
+      dstPort: 443,
+      skipReturn: true,
+    });
+    expect(pbrHit.outcome).toBe('delivered');
+    expect(pbrHit.hops[0].egressInterface).toBe('port3');
+    expect(pbrHit.hops[0].nextHop).toBe('10.30.0.2');
+    expect(pbrHit.hops[0].pbrApplied).toContain('10.30.0.2');
+    expect(pbrHit.hops[1].nodeId).toBe('wan2');
+
+    // Non-matching port (TCP/80) must fall back to RIB default route out port2 -> 10.20.0.2 (WAN-1)
+    const pbrMiss = tracePacket(pbrTopology, pbrSim, 'fgt-pbr', '8.8.8.8', 'default', {
+      srcIp: '10.10.0.50',
+      srcInterfaceId: port1Id,
+      protocol: 'tcp',
+      dstPort: 80,
+      skipReturn: true,
+    });
+    expect(pbrMiss.outcome).toBe('delivered');
+    expect(pbrMiss.hops[0].egressInterface).toBe('port2');
+    expect(pbrMiss.hops[0].nextHop).toBe('10.20.0.2');
+    expect(pbrMiss.hops[1].nodeId).toBe('wan1');
+
+    // Even with NO static default route in RIB, PBR must still steer matching traffic out port3 -> WAN-2
+    const noRibTopology: TopologyState = {
+      ...pbrTopology,
+      nodes: pbrTopology.nodes.map((n) => (n.id === 'fgt-pbr' ? { ...n, staticRoutes: [] } : n)),
+    };
+    const noRibSim = solveTopology(noRibTopology);
+    const noRibHit = tracePacket(noRibTopology, noRibSim, 'fgt-pbr', '8.8.8.8', 'default', {
+      srcIp: '10.10.0.50',
+      srcInterfaceId: port1Id,
+      protocol: 'tcp',
+      dstPort: 443,
+      skipReturn: true,
+    });
+    expect(noRibHit.outcome).toBe('delivered');
+    expect(noRibHit.hops[0].egressInterface).toBe('port3');
+    expect(noRibHit.hops[0].nextHop).toBe('10.30.0.2');
+    expect(noRibHit.hops[1].nodeId).toBe('wan2');
   });
 });

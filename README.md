@@ -8,8 +8,8 @@ Tailwind is a browser-based, multi-vendor network routing, switching, security, 
 
 ## Key Features
 
-- **15 Vendor & Cloud Profiles** ([`src/engine/vendorProfiles.ts`](src/engine/vendorProfiles.ts)):
-  - **Appliances / Routers / Firewalls**: Cisco IOS-XE, Cisco NX-OS, Cisco SD-WAN (Viptela), Palo Alto PAN-OS, Palo Alto Prisma SD-WAN (ION), Forcepoint NGFW (FRR), Arista EOS, Juniper Junos, MikroTik RouterOS, Fortinet FortiGate.
+- **19 Vendor & Cloud Profiles** ([`src/engine/vendorProfiles.ts`](src/engine/vendorProfiles.ts)):
+  - **Appliances / Routers / Firewalls**: Cisco IOS-XE, Cisco NX-OS, Cisco IOS-XR, Cisco SD-WAN (Viptela), Palo Alto PAN-OS, Palo Alto Prisma SD-WAN (ION), Forcepoint NGFW (FRR), Arista EOS, HPE Aruba AOS-CX, Juniper Junos, MikroTik RouterOS, Fortinet FortiGate, Check Point Gaia, VyOS.
   - **Cloud / WAN Abstractions**: MPLS WAN Cloud (`mpls-cloud`), Internet Transit / DIA (`internet-cloud`), AWS Transit Gateway (`aws-cloud`), Azure Virtual WAN (`azure-cloud`), Google Cloud Router (`gcp-cloud`).
   - **Vendor-Gated Capabilities**: Inspector controls, protocol options, LAG modes (LACP / PAgP / Static), FHRP (HSRP / VARP / VRRP), cluster modes (vPC, MLAG, FGCP, PAN-OS HA/HSCI, Forcepoint CVI), and terminology adapt automatically to each vendor.
 - **Control-Plane Protocols & RFC Standards**:
@@ -86,7 +86,7 @@ CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ```bash
-docker build --build-arg APP_VERSION=v0.2.0-beta.4 -t tailwind-net-sim .
+docker build --build-arg APP_VERSION=v0.2.0-beta.5 -t tailwind-net-sim .
 docker run -d -p 8080:80 --name tailwind tailwind-net-sim
 ```
 
@@ -96,4 +96,5 @@ Pushing a `v*` git tag triggers `.github/workflows/ci-release.yml`, which automa
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [Architecture & Engine Reference](docs/ARCHITECTURE.md)
