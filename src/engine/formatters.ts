@@ -770,6 +770,16 @@ export function formatRunningConfig(node: NodeConfig): string {
         `set network virtual-router ${vr} routing-table ip static-route ${sr.id} destination ${sr.prefix} nexthop ip-address ${sr.nextHop}`
       );
     }
+    if (node.ospf.enabled) {
+      lines.push(`set network virtual-router default protocol ospf enable yes`);
+      lines.push(`set network virtual-router default protocol ospf router-id ${node.routerId}`);
+      for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
+        const vr = iface.vrf || 'default';
+        lines.push(
+          `set network virtual-router ${vr} protocol ospf area 0.0.0.${iface.ospfArea} interface ${iface.name}${iface.passive ? ' passive enable yes' : ''}`
+        );
+      }
+    }
     if (node.bgp.enabled) {
       lines.push(`set network virtual-router default protocol bgp enable yes`);
       lines.push(`set network virtual-router default protocol bgp router-id ${node.routerId}`);
@@ -830,8 +840,11 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`set routing-instances ${iface.vrf} instance-type virtual-router`);
         lines.push(`set routing-instances ${iface.vrf} interface ${iface.name}.0`);
       }
-      if (iface.ospfArea !== undefined) {
-        lines.push(`set protocols ospf area 0.0.0.${iface.ospfArea} interface ${iface.name}.0`);
+      if (node.ospf.enabled && iface.ospfArea !== undefined) {
+        lines.push(`set protocols ospf area 0.0.0.${iface.ospfArea} interface ${iface.name}.0${iface.passive ? ' passive' : ''}`);
+      }
+      if (node.isis?.enabled && iface.isisLevel) {
+        lines.push(`set protocols isis interface ${iface.name}.0${iface.passive ? ' passive' : ''}`);
       }
     }
     for (const sr of node.staticRoutes) {
@@ -872,7 +885,7 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`/routing ospf area add name=area-${a} area-id=0.0.0.${a} instance=default-v2`);
       }
       for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
-        lines.push(`/routing ospf interface-template add area=area-${iface.ospfArea} interfaces=${iface.name}`);
+        lines.push(`/routing ospf interface-template add area=area-${iface.ospfArea} interfaces=${iface.name}${iface.passive ? ' passive=yes' : ''}`);
       }
     }
     if (node.bgp.enabled) {
@@ -908,6 +921,22 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`        set gateway ${sr.nextHop}`);
         lines.push(`    next`);
       });
+      lines.push(`end`);
+    }
+    if (node.ospf.enabled) {
+      lines.push(`config router ospf`, `    set router-id ${node.routerId}`);
+      const passiveIfs = node.interfaces.filter((i) => i.passive);
+      if (passiveIfs.length > 0) {
+        lines.push(`    set passive-interface ${passiveIfs.map((i) => `"${i.name}"`).join(' ')}`);
+      }
+      lines.push(`end`);
+    }
+    if (node.rip?.enabled) {
+      lines.push(`config router rip`);
+      const passiveIfs = node.interfaces.filter((i) => i.passive);
+      if (passiveIfs.length > 0) {
+        lines.push(`    set passive-interface ${passiveIfs.map((i) => `"${i.name}"`).join(' ')}`);
+      }
       lines.push(`end`);
     }
     if (node.bgp.enabled) {
@@ -1065,6 +1094,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       }
       if (iface.ospfDeadInterval !== undefined) {
         lines.push(` ip ospf dead-interval ${iface.ospfDeadInterval}`);
+      }
+      if (iface.ospfAuthKey) {
+        lines.push(` ip ospf authentication-key ${iface.ospfAuthKey}`);
       }
     }
     if (node.eigrp?.enabled) {
@@ -1231,7 +1263,8 @@ export function formatRunningConfig(node: NodeConfig): string {
       lines.push(` default-information originate`);
     }
     for (const r of node.redistributions.filter((x) => x.to === 'ospf')) {
-      lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''} subnets`);
+      const mType = r.metricType === 'E1' ? ' metric-type 1' : '';
+      lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}${mType} subnets`);
     }
     lines.push(`!`);
     const ospfNonDefaultVrfs = Array.from(
@@ -1248,6 +1281,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       const vRid = node.vrfRouterIds?.[ovrf]?.trim() || node.routerId;
       lines.push(`router ospf 1 vrf ${ovrf}`, ` router-id ${vRid}`);
       if (node.ospf.bfd) lines.push(` bfd all-interfaces`);
+      for (const iface of node.interfaces.filter((i) => i.passive && i.ospfArea !== undefined && (i.vrf || 'default') === ovrf)) {
+        lines.push(` passive-interface ${iface.name}`);
+      }
       for (const net of node.ospf.networks.filter((n) => (n.vrf || 'default') === ovrf)) {
         const parsed = parseCidr(net.prefix);
         if (parsed) {
@@ -1264,6 +1300,9 @@ export function formatRunningConfig(node: NodeConfig): string {
     if (node.eigrp.variance && node.eigrp.variance > 1) {
       lines.push(` variance ${node.eigrp.variance}`);
     }
+    if (node.eigrp.kValues) {
+      lines.push(` metric weights 0 ${node.eigrp.kValues.join(' ')}`);
+    }
     if (node.eigrp.bfd) lines.push(` bfd all-interfaces`);
     for (const iface of node.interfaces.filter((i) => i.passive)) {
       lines.push(` passive-interface ${iface.name}`);
@@ -1276,7 +1315,7 @@ export function formatRunningConfig(node: NodeConfig): string {
       }
     }
     for (const r of node.redistributions.filter((x) => x.to === 'eigrp')) {
-      lines.push(` redistribute ${r.from}`);
+      lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}`);
     }
     lines.push(`!`);
   }
@@ -1298,11 +1337,15 @@ export function formatRunningConfig(node: NodeConfig): string {
     for (const iface of node.interfaces.filter((i) => i.passive && i.isisLevel)) {
       lines.push(` passive-interface ${iface.name}`);
     }
+    for (const sum of node.isis.summaries ?? []) {
+      const parsed = parseCidr(sum.prefix);
+      if (parsed) lines.push(` summary-address ${parsed.network} ${uint32ToIp(parsed.maskUint32)}`);
+    }
     for (const net of node.isis.networks) {
       lines.push(` ! advertise ${net.prefix}${net.level ? ` (${net.level})` : ''}`);
     }
     for (const r of node.redistributions.filter((x) => x.to === 'isis')) {
-      lines.push(` redistribute ${r.from}`);
+      lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}`);
     }
     lines.push(`!`);
   }
@@ -1314,11 +1357,11 @@ export function formatRunningConfig(node: NodeConfig): string {
     }
     for (const net of node.rip.networks) {
       const parsed = parseCidr(net.prefix);
-      if (parsed) lines.push(` network ${parsed.network}`);
+      if (parsed) lines.push(` network ${parsed.network}/${parsed.prefixLen}`);
     }
     if (node.rip.defaultOriginate) lines.push(` default-information originate`);
     for (const r of node.redistributions.filter((x) => x.to === 'rip')) {
-      lines.push(` redistribute ${r.from}`);
+      lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}`);
     }
     lines.push(`!`);
   }
@@ -1388,6 +1431,7 @@ export function formatRunningConfig(node: NodeConfig): string {
     if (node.bgp.deterministicMed) lines.push(` bgp deterministic-med`);
     if (node.bgp.bestpathAsPathIgnore) lines.push(` bgp bestpath as-path ignore`);
     if (node.bgp.medMissingAsWorst) lines.push(` bgp bestpath med missing-as-worst`);
+    if (node.bgp.rpkiRejectInvalid) lines.push(` bgp rpki reject-invalid`);
     if (node.bgp.gracefulRestart) lines.push(` bgp graceful-restart`);
     const formatBgpPeerLines = (p: (typeof node.bgp.peers)[number], indent = ' ') => {
       lines.push(`${indent}neighbor ${p.peerIp} remote-as ${p.remoteAs}`);

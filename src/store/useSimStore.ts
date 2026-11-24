@@ -172,6 +172,7 @@ interface SimStore {
   importTopology: (topology: TopologyState) => void;
   mergeImportedNodes: (nodes: NodeConfig[], links?: LinkConfig[]) => void;
   hydrateMatchingNodes: (nodes: NodeConfig[]) => number;
+  applyParsedNodeConfig: (nodeId: string, parsedNode: NodeConfig) => void;
   captureSnapshot: () => void;
   clearSnapshot: () => void;
   setTraceParams: (
@@ -523,6 +524,111 @@ export const useSimStore = create<SimStore>((set, get) => {
       });
       triggerSolve(next);
       return matchedCount;
+    },
+
+    applyParsedNodeConfig: (nodeId, parsedNode) => {
+      const { topology, past } = get();
+      const normIf = (s: string) =>
+        s
+          .trim()
+          .toLowerCase()
+          .replace(/^gigabitethernet/, 'gi')
+          .replace(/^tengigabitethernet/, 'te')
+          .replace(/^fastethernet/, 'fa')
+          .replace(/^ethernet/, 'eth')
+          .replace(/^port-channel/, 'po')
+          .replace(/^loopback/, 'lo');
+
+      const nextNodes = topology.nodes.map((existing) => {
+        if (existing.id !== nodeId) return existing;
+        const usedParsedIds = new Set<string>();
+        const mergedIfaces = existing.interfaces
+          .filter((exIf) => {
+            const isLinked = topology.links.some(
+              (l) =>
+                (l.sourceNodeId === nodeId && l.sourceInterfaceId === exIf.id) ||
+                (l.targetNodeId === nodeId && l.targetInterfaceId === exIf.id)
+            );
+            const exNorm = normIf(exIf.name);
+            const stillPresent = parsedNode.interfaces.some(
+              (mIf) =>
+                mIf.name.toLowerCase() === exIf.name.toLowerCase() ||
+                normIf(mIf.name) === exNorm
+            );
+            return isLinked || stillPresent;
+          })
+          .map((exIf) => {
+            const exNorm = normIf(exIf.name);
+            const pIf = parsedNode.interfaces.find(
+              (mIf) =>
+                mIf.name.toLowerCase() === exIf.name.toLowerCase() ||
+                normIf(mIf.name) === exNorm
+            );
+            if (!pIf) return exIf;
+            usedParsedIds.add(pIf.id);
+            return {
+              ...exIf,
+              name: pIf.name,
+              cidr: pIf.cidr,
+              cidr6: pIf.cidr6,
+              vrf: pIf.vrf || 'default',
+              ospfArea: pIf.ospfArea,
+              ospfCost: pIf.ospfCost,
+              ospfPriority: pIf.ospfPriority,
+              ospfHelloInterval: pIf.ospfHelloInterval,
+              ospfDeadInterval: pIf.ospfDeadInterval,
+              ospfNetworkType: pIf.ospfNetworkType,
+              ospfAuthKey: pIf.ospfAuthKey,
+              passive: pIf.passive,
+              mtu: pIf.mtu,
+              shutdown: pIf.shutdown,
+              lacpGroup: pIf.lacpGroup,
+              lacpMode: pIf.lacpMode,
+              lagProtocol: pIf.lagProtocol,
+              vlanId: pIf.vlanId,
+              parentInterface: pIf.parentInterface,
+              secondaryCidrs: pIf.secondaryCidrs,
+              unnumberedSource: pIf.unnumberedSource,
+              urpfMode: pIf.urpfMode,
+            };
+          });
+
+        for (const pIf of parsedNode.interfaces) {
+          if (!usedParsedIds.has(pIf.id)) {
+            mergedIfaces.push(pIf);
+          }
+        }
+
+        return {
+          ...existing,
+          hostname: parsedNode.hostname || existing.hostname,
+          vendor: parsedNode.vendor || existing.vendor,
+          routerId: parsedNode.routerId || existing.routerId,
+          vrfs: parsedNode.vrfs?.length ? parsedNode.vrfs : ['default'],
+          interfaces: mergedIfaces,
+          staticRoutes: parsedNode.staticRoutes,
+          ospf: parsedNode.ospf,
+          bgp: parsedNode.bgp,
+          eigrp: parsedNode.eigrp,
+          isis: parsedNode.isis,
+          rip: parsedNode.rip,
+          redistributions: parsedNode.redistributions,
+          prefixLists: parsedNode.prefixLists,
+          routeMaps: parsedNode.routeMaps,
+          vrfLeaks: parsedNode.vrfLeaks,
+          aclRules: parsedNode.aclRules,
+          natRules: parsedNode.natRules,
+          fhrpGroups: parsedNode.fhrpGroups,
+        };
+      });
+
+      const next: TopologyState = { ...topology, nodes: nextNodes };
+      set({
+        topology: next,
+        past: [...past, structuredClone(topology)].slice(-30),
+        future: [],
+      });
+      triggerSolve(next);
     },
 
     autoLayoutTopology: () => {

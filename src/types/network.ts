@@ -664,7 +664,7 @@ export interface NeighborStatus {
   neighborId: string;
   peerIp: string;
   interfaceName: string;
-  state: 'FULL' | 'Established' | 'Up' | 'Active' | 'Standby' | 'Down';
+  state: 'FULL' | '2-Way' | 'ExStart' | 'Established' | 'Up' | 'Active' | 'Standby' | 'Down';
   ospfRole?: 'DR' | 'BDR' | 'DROther' | 'P2P';
   isisDis?: boolean;
   detail?: string;

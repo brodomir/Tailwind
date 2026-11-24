@@ -1,10 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckOutlined,
   CopyOutlined,
   DownloadOutlined,
+  SaveOutlined,
+  UndoOutlined,
 } from '@ant-design/icons';
-import { Button, Empty, Input, Space, Switch, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Empty, Input, Space, Switch, Table, Tabs, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { computeRibDiff } from '../engine/diff';
 import {
@@ -12,6 +14,7 @@ import {
   formatRunningConfig,
   formatSecondaryCli,
 } from '../engine/formatters';
+import { importTopologyFromText, validateRunningConfig } from '../engine/importer';
 import { VENDOR_METADATA } from '../engine/vendorProfiles';
 import { useSimStore } from '../store/useSimStore';
 import { LfibEntry, MrouteEntry, NeighborStatus, RibEntry } from '../types/network';
@@ -99,12 +102,17 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     traceSrcNodeId,
     setTraceParams,
     runTrace,
+    applyParsedNodeConfig,
   } = useSimStore();
   const [activeKey, setActiveKey] = useState('primary');
   const [copied, setCopied] = useState(false);
   const [ribFilter, setRibFilter] = useState('');
   const [ribActiveOnly, setRibActiveOnly] = useState(false);
   const [ribColWidths, setRibColWidths] = useState<Record<string, number>>(DEFAULT_RIB_COL_WIDTHS);
+  const [draftConfig, setDraftConfig] = useState('');
+  const [configDirty, setConfigDirty] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [configSaved, setConfigSaved] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -115,6 +123,13 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
 
   const node = topology.nodes.find((n) => n.id === selectedNodeId);
   const result = node ? simResult.nodes[node.id] : undefined;
+  const formattedConfig = node ? formatRunningConfig(node) : '';
+
+  useEffect(() => {
+    setDraftConfig(formattedConfig);
+    setConfigDirty(false);
+    setConfigError(null);
+  }, [selectedNodeId, formattedConfig]);
 
   if (!node || !result) {
     return (
@@ -129,8 +144,35 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
   const secondaryText = formatSecondaryCli(node, result);
   const effectiveActiveKey =
     activeKey === 'secondary' && !secondaryText ? 'primary' : activeKey;
-  const runningConfigText = formatRunningConfig(node);
+  const runningConfigText = configDirty ? draftConfig : formattedConfig;
+  const configIssues = useMemo(
+    () => (effectiveActiveKey === 'config' ? validateRunningConfig(draftConfig) : []),
+    [effectiveActiveKey, draftConfig]
+  );
+  const configErrors = configIssues.filter((i) => i.severity === 'error');
+  const configWarnings = configIssues.filter((i) => i.severity === 'warning');
   const jsonText = JSON.stringify(result, null, 2);
+
+  const handleSaveRunningConfig = () => {
+    if (configErrors.length > 0) {
+      setConfigError(`Fix ${configErrors.length} error(s) before applying.`);
+      return;
+    }
+    try {
+      setConfigError(null);
+      const parsed = importTopologyFromText(draftConfig);
+      if (!parsed.nodes.length) {
+        setConfigError('Could not parse any device configuration from the text.');
+        return;
+      }
+      applyParsedNodeConfig(node.id, parsed.nodes[0]);
+      setConfigDirty(false);
+      setConfigSaved(true);
+      window.setTimeout(() => setConfigSaved(false), 1800);
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : 'Failed to parse running config');
+    }
+  };
 
   const diffSummary = baselineSimResult
     ? computeRibDiff(baselineSimResult, simResult)
@@ -567,11 +609,83 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       : []),
     {
       key: 'config',
-      label: 'Running Config',
+      label: configDirty ? 'Running Config *' : 'Running Config',
       children: (
-        <pre className="m-0 whitespace-pre font-mono text-xs leading-relaxed text-amber-200">
-          {runningConfigText}
-        </pre>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] text-[#8e8e93]">
+              Edit config directly and click <strong className="text-slate-200">Save &amp; Apply</strong> (or <kbd className="rounded bg-white/10 px-1">Ctrl+Enter</kbd>) to re-converge.
+            </span>
+            <Space size="small">
+              {configErrors.length > 0 ? (
+                <Tag color="red" className="!m-0">{configErrors.length} Error(s)</Tag>
+              ) : configWarnings.length > 0 ? (
+                <Tag color="gold" className="!m-0">{configWarnings.length} Warning(s)</Tag>
+              ) : (
+                <Tag color="green" className="!m-0">Valid Syntax</Tag>
+              )}
+              {configSaved && <Tag color="cyan" className="!m-0">Applied</Tag>}
+              {configDirty && (
+                <Button
+                  size="small"
+                  icon={<UndoOutlined />}
+                  onClick={() => {
+                    setDraftConfig(formattedConfig);
+                    setConfigDirty(false);
+                    setConfigError(null);
+                  }}
+                >
+                  Reset
+                </Button>
+              )}
+              <Button
+                size="small"
+                type="primary"
+                icon={<SaveOutlined />}
+                disabled={!configDirty || configErrors.length > 0}
+                onClick={handleSaveRunningConfig}
+              >
+                Save &amp; Apply
+              </Button>
+            </Space>
+          </div>
+          {configError && (
+            <Alert type="error" showIcon message={configError} className="!py-1 !text-xs" />
+          )}
+          {configIssues.length > 0 && (
+            <Alert
+              type={configErrors.length > 0 ? 'error' : 'warning'}
+              showIcon
+              className="!py-1.5 !text-xs"
+              message={
+                <div className="max-h-24 space-y-0.5 overflow-auto font-mono text-[11px]">
+                  {configIssues.map((iss, i) => (
+                    <div key={`${iss.line}-${i}`}>
+                      Line {iss.line} [{iss.severity.toUpperCase()}]: {iss.message}
+                    </div>
+                  ))}
+                </div>
+              }
+            />
+          )}
+          <Input.TextArea
+            value={draftConfig}
+            onChange={(e) => {
+              setDraftConfig(e.target.value);
+              setConfigDirty(e.target.value !== formattedConfig);
+              setConfigError(null);
+            }}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && configDirty) {
+                e.preventDefault();
+                handleSaveRunningConfig();
+              }
+            }}
+            autoSize={{ minRows: 14, maxRows: 30 }}
+            spellCheck={false}
+            className="!border-slate-700 !bg-[#0b1120] !font-mono !text-xs !leading-relaxed !text-amber-200"
+          />
+        </div>
       ),
     },
     {

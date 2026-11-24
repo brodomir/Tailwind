@@ -44,11 +44,13 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
   const [newLinkSrcIf, setNewLinkSrcIf] = useState('');
   const [newLinkDstIf, setNewLinkDstIf] = useState('');
   const [newLinkType, setNewLinkType] = useState<'ethernet' | 'ipsec'>('ethernet');
+  const [advProtoExpanded, setAdvProtoExpanded] = useState(false);
 
   useEffect(() => {
     setNewLinkTargetId('');
     setNewLinkSrcIf('');
     setNewLinkDstIf('');
+    setAdvProtoExpanded(false);
   }, [selectedNodeId]);
 
   const node = topology.nodes.find((n) => n.id === selectedNodeId);
@@ -62,11 +64,20 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
 
   const caps = VENDOR_CAPABILITIES[node.vendor] ?? VENDOR_CAPABILITIES['cisco-ios-xe'];
   const vrfs = node.vrfs?.length ? node.vrfs : ['default'];
+  const workspaceVrfs = Array.from(
+    new Set([
+      ...topology.nodes.flatMap((n) => [
+        ...(n.vrfs ?? []),
+        ...n.interfaces.map((i) => i.vrf).filter(Boolean),
+      ]),
+      ...Object.keys(topology.vrfColors ?? {}),
+    ])
+  ).filter((v) => v && v !== 'default');
   const availableVrfs = Array.from(
     new Set([
       ...vrfs,
       ...node.interfaces.map((i) => i.vrf).filter(Boolean),
-      ...(node.vendor === 'forcepoint-ngfw' ? [] : Object.keys(topology.vrfColors ?? {})),
+      ...(node.vendor === 'forcepoint-ngfw' ? [] : workspaceVrfs),
     ])
   );
   const prefixLists = node.prefixLists ?? [];
@@ -425,6 +436,28 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         { value: 'broadcast', label: 'Broadcast' },
                         { value: 'point-to-point', label: 'Point-to-Point' },
                       ]}
+                    />
+                    <InputNumber
+                      size="small"
+                      className="col-span-2 !w-full"
+                      placeholder="IS-IS Met (10)"
+                      min={1}
+                      max={16777215}
+                      value={iface.isisMetric ?? null}
+                      onChange={(val) =>
+                        updateInterface(node.id, iface.id, { isisMetric: val ?? undefined })
+                      }
+                    />
+                    <InputNumber
+                      size="small"
+                      className="col-span-2 !w-full"
+                      placeholder="IS-IS Prio (64)"
+                      min={0}
+                      max={127}
+                      value={iface.isisPriority ?? null}
+                      onChange={(val) =>
+                        updateInterface(node.id, iface.id, { isisPriority: val ?? undefined })
+                      }
                     />
                   </>
                 )}
@@ -1265,7 +1298,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               )}
               {(caps.igps.rip || node.rip?.enabled) && (
               <Space>
-                <span className="font-semibold text-teal-300">RIPv2</span>
+                <span className="font-semibold text-teal-300">RIP</span>
                 <Switch
                   size="small"
                   checked={node.rip?.enabled ?? false}
@@ -1309,6 +1342,18 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       }
                     />
                     <span>BFD</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.ospf.maxMetricRouterLsa)}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          ospf: { ...node.ospf, maxMetricRouterLsa: checked },
+                        })
+                      }
+                    />
+                    <span>max-metric</span>
                   </label>
                   {['cisco-ios-xe', 'cisco-nx-os', 'arista-eos', 'juniper-junos', 'mikrotik-routeros', 'forcepoint-ngfw', 'fortigate'].includes(
                     node.vendor
@@ -1365,6 +1410,23 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         { value: 'nssa', label: 'NSSA' },
                       ]}
                     />
+                    {(node.ospf.areaTypes?.[1] === 'nssa') && (
+                      <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-300">
+                        <Switch
+                          size="small"
+                          checked={Boolean(node.ospf.nssaNoSummary?.[1])}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              ospf: {
+                                ...node.ospf,
+                                nssaNoSummary: { ...(node.ospf.nssaNoSummary ?? {}), 1: checked },
+                              },
+                            })
+                          }
+                        />
+                        <span>NSSA no-summary</span>
+                      </label>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -1654,6 +1716,27 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-semibold text-sky-300">EIGRP Network Advertisements</span>
                   <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 text-[11px]">
+                      <span className="text-slate-400">Var</span>
+                      <InputNumber
+                        size="small"
+                        min={1}
+                        max={128}
+                        style={{ width: 52 }}
+                        value={node.eigrp?.variance ?? 1}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: node.eigrp?.networks ?? [],
+                              variance: val ?? 1,
+                            },
+                          })
+                        }
+                      />
+                    </div>
                     <label className="flex cursor-pointer items-center gap-1 text-slate-300">
                       <Switch
                         size="small"
@@ -1783,6 +1866,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onClick={() =>
                         updateNode(node.id, {
                           eigrp: {
+                            ...(node.eigrp ?? { enabled: true, asn: 100 }),
                             enabled: true,
                             asn: node.eigrp?.asn ?? 100,
                             networks: (node.eigrp?.networks ?? []).filter((x) => x.id !== en.id),
@@ -1858,13 +1942,52 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     onChange={(e) =>
                       updateNode(node.id, {
                         isis: {
+                          ...(node.isis ?? { level: 'L1-L2', networks: [] }),
                           enabled: true,
                           net: e.target.value,
-                          level: node.isis?.level ?? 'L1-L2',
-                          networks: node.isis?.networks ?? [],
                         },
                       })
                     }
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.isis?.overloadBit)}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, overloadBit: checked },
+                        })
+                      }
+                    />
+                    <span>Overload Bit</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.isis?.multiTopologyV6)}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, multiTopologyV6: checked },
+                        })
+                      }
+                    />
+                    <span>IPv6 MT</span>
+                  </label>
+                  <Select
+                    size="small"
+                    style={{ width: 96 }}
+                    value={node.isis?.metricStyle ?? 'wide'}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, metricStyle: val },
+                      })
+                    }
+                    options={[
+                      { value: 'wide', label: 'Wide Met' },
+                      { value: 'narrow', label: 'Narrow' },
+                    ]}
                   />
                 </div>
                 <div className="flex items-center justify-between text-[11px]">
@@ -1894,8 +2017,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     onClick={() =>
                       updateNode(node.id, {
                         isis: {
+                          ...(node.isis ?? { level: 'L1-L2' }),
                           enabled: true,
-                          level: node.isis?.level ?? 'L1-L2',
                           networks: [
                             ...(node.isis?.networks ?? []),
                             {
@@ -1924,8 +2047,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onChange={(e) =>
                         updateNode(node.id, {
                           isis: {
+                            ...(node.isis ?? { level: 'L1-L2' }),
                             enabled: true,
-                            level: node.isis?.level ?? 'L1-L2',
                             networks: (node.isis?.networks ?? []).map((x) =>
                               x.id === inw.id ? { ...x, prefix: e.target.value } : x
                             ),
@@ -1940,8 +2063,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onChange={(val) =>
                         updateNode(node.id, {
                           isis: {
+                            ...(node.isis ?? { level: 'L1-L2' }),
                             enabled: true,
-                            level: node.isis?.level ?? 'L1-L2',
                             networks: (node.isis?.networks ?? []).map((x) =>
                               x.id === inw.id ? { ...x, level: val } : x
                             ),
@@ -1962,8 +2085,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onChange={(val) =>
                         updateNode(node.id, {
                           isis: {
+                            ...(node.isis ?? { level: 'L1-L2' }),
                             enabled: true,
-                            level: node.isis?.level ?? 'L1-L2',
                             networks: (node.isis?.networks ?? []).map((x) =>
                               x.id === inw.id ? { ...x, metric: val ?? undefined } : x
                             ),
@@ -1978,8 +2101,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onChange={(val) =>
                         updateNode(node.id, {
                           isis: {
+                            ...(node.isis ?? { level: 'L1-L2' }),
                             enabled: true,
-                            level: node.isis?.level ?? 'L1-L2',
                             networks: (node.isis?.networks ?? []).map((x) =>
                               x.id === inw.id ? { ...x, vrf: val } : x
                             ),
@@ -1997,8 +2120,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       onClick={() =>
                         updateNode(node.id, {
                           isis: {
+                            ...(node.isis ?? { level: 'L1-L2' }),
                             enabled: true,
-                            level: node.isis?.level ?? 'L1-L2',
                             networks: (node.isis?.networks ?? []).filter((x) => x.id !== inw.id),
                           },
                         })
@@ -2061,7 +2184,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
 
             {node.rip?.enabled && (
               <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
-                <div className="flex items-center justify-between text-[11px]">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
                   <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
                     <Switch
                       size="small"
@@ -2079,9 +2202,28 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     />
                     <span>default-information originate</span>
                   </label>
+                  <Select
+                    size="small"
+                    style={{ width: 82 }}
+                    value={node.rip?.version ?? 2}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        rip: {
+                          enabled: true,
+                          version: val,
+                          defaultOriginate: node.rip?.defaultOriginate,
+                          networks: node.rip?.networks ?? [],
+                        },
+                      })
+                    }
+                    options={[
+                      { value: 1, label: 'RIPv1' },
+                      { value: 2, label: 'RIPv2' },
+                    ]}
+                  />
                 </div>
                 <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300">
-                  <span>RIPv2 Network Advertisements</span>
+                  <span>RIPv{node.rip?.version ?? 2} Network Advertisements</span>
                   <Button
                     size="small"
                     icon={<PlusOutlined />}
@@ -2593,6 +2735,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     options={[
                       { value: 'xtr', label: 'xTR (ITR/ETR)' },
                       { value: 'pxtr', label: 'PxTR' },
+                      { value: 'pitr', label: 'PiTR' },
+                      { value: 'petr', label: 'PeTR' },
                       { value: 'ms-mr', label: 'MS/MR' },
                     ]}
                   />
@@ -2616,6 +2760,20 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     }
                   />
                 </div>
+                {node.lisp.role !== 'ms-mr' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="shrink-0 text-slate-400">Map-Server/Resolver</span>
+                    <Input
+                      size="small"
+                      placeholder="e.g. 10.0.0.100"
+                      value={node.lisp.mapServerIp ?? ''}
+                      onChange={(e) =>
+                        updateNode(node.id, { lisp: { ...node.lisp!, mapServerIp: e.target.value || undefined } })
+                      }
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
                     <Switch
@@ -3425,7 +3583,22 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {(caps.mpls || caps.switching || caps.multicast) && (
+          {(caps.mpls || caps.switching || caps.multicast) && (() => {
+            const hasAdvProtoActive = Boolean(
+              node.mpls?.ldpEnabled ||
+              node.mpls?.segmentRouting?.enabled ||
+              node.switching?.stpEnabled ||
+              node.switching?.lldpEnabled ||
+              node.multicast?.pimEnabled ||
+              node.timing?.ptpMode ||
+              node.timing?.ntpServer ||
+              node.telemetry?.bmpServerIp ||
+              node.telemetry?.ipfixCollectorIp ||
+              (node.bgp.flowspecRules?.length ?? 0) > 0 ||
+              (node.nat64Rules?.length ?? 0) > 0
+            );
+            const showAdvProtoBody = hasAdvProtoActive || advProtoExpanded;
+            return (
           <Card
             size="small"
             title={
@@ -3439,8 +3612,26 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   .join(' / ')}
               </span>
             }
+            extra={
+              <Switch
+                size="small"
+                checked={showAdvProtoBody}
+                onChange={(checked) => {
+                  setAdvProtoExpanded(checked);
+                  if (!checked) {
+                    updateNode(node.id, {
+                      mpls: node.mpls ? { ...node.mpls, ldpEnabled: false, segmentRouting: node.mpls.segmentRouting ? { ...node.mpls.segmentRouting, enabled: false } : undefined } : undefined,
+                      switching: node.switching ? { ...node.switching, stpEnabled: false, lldpEnabled: false } : undefined,
+                      multicast: node.multicast ? { ...node.multicast, pimEnabled: false } : undefined,
+                    });
+                  }
+                }}
+              />
+            }
           >
+            {showAdvProtoBody && (
             <div className="space-y-2 text-[11px]">
+              {(caps.mpls || node.mpls?.ldpEnabled || node.mpls?.segmentRouting?.enabled) && (
               <div className="flex flex-wrap items-center gap-3">
                 <label className="flex cursor-pointer items-center gap-1.5">
                   <Switch
@@ -3488,6 +3679,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   />
                 )}
               </div>
+              )}
+              {(caps.switching || node.switching?.stpEnabled || node.switching?.lldpEnabled) && (
               <div className="flex flex-wrap items-center gap-3">
                 <label className="flex cursor-pointer items-center gap-1.5">
                   <Switch
@@ -3528,6 +3721,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   <span>LLDP</span>
                 </label>
               </div>
+              )}
+              {(caps.multicast || node.multicast?.pimEnabled) && (
               <div className="flex flex-wrap items-center gap-2">
                 <label className="flex cursor-pointer items-center gap-1.5">
                   <Switch
@@ -3554,6 +3749,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   />
                 )}
               </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2">
                 <Select
                   size="small"
@@ -3757,8 +3953,10 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 ))}
               </div>
             </div>
+            )}
           </Card>
-          )}
+            );
+          })()}
 
           <Card
             size="small"
@@ -3836,6 +4034,36 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       }
                     />
                     <span>RPKI Drop Invalid</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.bgp.bestpathAsPathIgnore)}
+                      onChange={(checked) =>
+                        updateNode(node.id, { bgp: { ...node.bgp, bestpathAsPathIgnore: checked } })
+                      }
+                    />
+                    <span>as-path ignore</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.bgp.medMissingAsWorst)}
+                      onChange={(checked) =>
+                        updateNode(node.id, { bgp: { ...node.bgp, medMissingAsWorst: checked } })
+                      }
+                    />
+                    <span>missing-as-worst</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1">
+                    <Switch
+                      size="small"
+                      checked={Boolean(node.bgp.gracefulRestart)}
+                      onChange={(checked) =>
+                        updateNode(node.id, { bgp: { ...node.bgp, gracefulRestart: checked } })
+                      }
+                    />
+                    <span>Graceful Restart</span>
                   </label>
                 </div>
                 {node.bgp.peers.map((p) => (
@@ -4723,9 +4951,27 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                       })
                     }
                   />
+                  {r.to === 'ospf' && (
+                    <Select
+                      size="small"
+                      className="col-span-2"
+                      value={r.metricType ?? 'E2'}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          redistributions: node.redistributions.map((x) =>
+                            x.id === r.id ? { ...x, metricType: val } : x
+                          ),
+                        })
+                      }
+                      options={[
+                        { value: 'E1', label: 'E1' },
+                        { value: 'E2', label: 'E2' },
+                      ]}
+                    />
+                  )}
                   <Select
                     size="small"
-                    className="col-span-3"
+                    className={r.to === 'ospf' ? 'col-span-2' : 'col-span-3'}
                     allowClear
                     placeholder="Route-Map"
                     value={r.routeMapId}
@@ -4809,6 +5055,34 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 );
               })}
             </div>
+            {workspaceVrfs.some((v) => !vrfs.includes(v)) && (
+              <Select
+                size="small"
+                className="!mb-2 w-full"
+                value={null}
+                disabled={node.vendor === 'forcepoint-ngfw' && vrfs.length >= 1}
+                placeholder="Add existing workspace VRF..."
+                onChange={(val: string) => {
+                  if (!val || vrfs.includes(val)) return;
+                  if (node.vendor === 'forcepoint-ngfw' && vrfs.length >= 1) return;
+                  updateNode(node.id, { vrfs: [...vrfs, val] });
+                }}
+                options={workspaceVrfs
+                  .filter((v) => !vrfs.includes(v))
+                  .map((v) => ({
+                    value: v,
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2 w-2 rounded-full"
+                          style={{ backgroundColor: topology.vrfColors?.[v] ?? '#06b6d4' }}
+                        />
+                        <span>{v}</span>
+                      </span>
+                    ),
+                  }))}
+              />
+            )}
             <Space.Compact size="small" className="w-full">
               <input
                 type="color"

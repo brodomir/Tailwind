@@ -38,7 +38,7 @@ function parsePanOsSetConfig(lines: string[]): NodeConfig {
   let hostname = 'PAN-IMPORTED';
   let routerId = '10.250.0.1';
   const vrfs = new Set<string>(['default']);
-  const ifaceMap = new Map<string, { cidr: string; vrf: string; ospfArea?: number }>();
+  const ifaceMap = new Map<string, { cidr: string; vrf: string; ospfArea?: number; passive?: boolean }>();
   const staticRoutes: NodeConfig['staticRoutes'] = [];
   let ospfEnabled = false;
   let bgpEnabled = false;
@@ -93,6 +93,21 @@ function parsePanOsSetConfig(lines: string[]): NodeConfig {
       continue;
     }
 
+    const ospfIfMatch = line.match(
+      /^set\s+network\s+virtual-router\s+(\S+)\s+protocol\s+ospf\s+area\s+(\S+)\s+interface\s+(\S+)(?:\s+passive\s+(?:enable\s+)?(yes|no))?/i
+    );
+    if (ospfIfMatch) {
+      vrfs.add(ospfIfMatch[1]);
+      ospfEnabled = true;
+      const areaRaw = ospfIfMatch[2];
+      const areaNum = areaRaw.includes('.') ? Number(areaRaw.split('.').pop()) : Number(areaRaw);
+      const cur = ifaceMap.get(ospfIfMatch[3]) ?? { cidr: '0.0.0.0/0', vrf: ospfIfMatch[1] };
+      if (Number.isFinite(areaNum)) cur.ospfArea = areaNum;
+      if (ospfIfMatch[4]) cur.passive = ospfIfMatch[4].toLowerCase() === 'yes';
+      ifaceMap.set(ospfIfMatch[3], cur);
+      continue;
+    }
+
     const ospfMatch = line.match(
       /^set\s+network\s+virtual-router\s+(\S+)\s+protocol\s+ospf\s+.*router-id\s+(\d+\.\d+\.\d+\.\d+)/
     );
@@ -141,6 +156,7 @@ function parsePanOsSetConfig(lines: string[]): NodeConfig {
       cidr: info.cidr,
       vrf: info.vrf,
       ospfArea: info.ospfArea,
+      passive: info.passive,
     })
   );
 
@@ -182,6 +198,8 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
 
   let ospfEnabled = false;
   let ospfBfd = false;
+  let ospfDefaultOriginate = false;
+  let ospfReferenceBandwidth: number | undefined;
   let ospfMaxMetricRouterLsa = false;
   const ospfNssaNoSummary: Record<number, boolean> = {};
   let bgpEnabled = false;
@@ -193,10 +211,14 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
   let bgpDeterministicMed = false;
   let bgpBestpathAsPathIgnore = false;
   let bgpMedMissingAsWorst = false;
+  let bgpRpkiRejectInvalid = false;
+  let bgpGracefulRestart = false;
   let eigrpEnabled = false;
   let eigrpAsn = 100;
   let eigrpBfd = false;
   let eigrpVariance: number | undefined;
+  let eigrpKValues: [number, number, number, number, number] | undefined;
+  const eigrpNetworks: NonNullable<NodeConfig['eigrp']>['networks'] = [];
   let isisEnabled = false;
   let isisNet: string | undefined;
   let isisLevel: 'L1' | 'L2' | 'L1-L2' = 'L1-L2';
@@ -204,6 +226,12 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
   let isisOverloadBit = false;
   let isisMetricStyle: 'narrow' | 'wide' | undefined;
   let isisMultiTopologyV6 = false;
+  const isisSummaries: NonNullable<NodeConfig['isis']>['summaries'] = [];
+  const redistributions: NodeConfig['redistributions'] = [];
+  let ripEnabled = false;
+  let ripVersion: 1 | 2 = 2;
+  let ripDefaultOriginate = false;
+  const ripNetworks: NonNullable<NodeConfig['rip']>['networks'] = [];
   let isNxOs = false;
   const vrfRouterIds: Record<string, string> = {};
   const mplsVrfTargets: NonNullable<NonNullable<NodeConfig['mplsVpn']>['vrfTargets']> = [];
@@ -223,6 +251,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     | 'bgp'
     | 'eigrp'
     | 'isis'
+    | 'rip'
     | 'routemap'
     | 'vpc'
     | 'lisp' = 'none';
@@ -386,6 +415,12 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       continue;
     }
 
+    if (/^router\s+rip$/i.test(trimmed)) {
+      currentSection = 'rip';
+      ripEnabled = true;
+      continue;
+    }
+
     if (currentSection === 'interface' && currentIface) {
       const encapDot1q = trimmed.match(/^encapsulation\s+dot1[qQ]\s+(\d+)/i);
       if (encapDot1q) {
@@ -442,6 +477,16 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       const ospfCost = trimmed.match(/^ip\s+ospf\s+cost\s+(\d+)/i);
       if (ospfCost) {
         currentIface.ospfCost = Number(ospfCost[1]);
+        continue;
+      }
+      if (/^ip\s+ospf\s+passive-interface$/i.test(trimmed)) {
+        isNxOs = true;
+        currentIface.passive = true;
+        continue;
+      }
+      if (/^no\s+ip\s+ospf\s+passive-interface$/i.test(trimmed)) {
+        isNxOs = true;
+        currentIface.passive = false;
         continue;
       }
       const ospfPrio = trimmed.match(/^ip\s+ospf\s+priority\s+(\d+)/i);
@@ -727,6 +772,62 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       if (slp) { currentRouteMapEntry.set.setLocalPref = Number(slp[1]); continue; }
     }
 
+    if (
+      currentSection === 'ospf' ||
+      currentSection === 'eigrp' ||
+      currentSection === 'isis' ||
+      currentSection === 'rip'
+    ) {
+      if (/^passive-interface\s+default$/i.test(trimmed)) {
+        for (const iface of interfaces) {
+          iface.passive = true;
+        }
+        continue;
+      }
+      const noPassiveMatch = trimmed.match(/^no\s+passive-interface\s+(\S+)/i);
+      if (noPassiveMatch) {
+        const target = interfaces.find((i) => i.name.toLowerCase() === noPassiveMatch[1].toLowerCase());
+        if (target) target.passive = false;
+        continue;
+      }
+      const passiveIfMatch = trimmed.match(/^passive-interface\s+(\S+)/i);
+      if (passiveIfMatch) {
+        const target = interfaces.find((i) => i.name.toLowerCase() === passiveIfMatch[1].toLowerCase());
+        if (target) target.passive = true;
+        continue;
+      }
+    }
+
+    if (currentSection === 'rip') {
+      const verMatch = trimmed.match(/^version\s+(1|2)$/i);
+      if (verMatch) {
+        ripVersion = Number(verMatch[1]) as 1 | 2;
+        continue;
+      }
+      if (/^default-information\s+originate$/i.test(trimmed)) {
+        ripDefaultOriginate = true;
+        continue;
+      }
+      const ripNetMatch = trimmed.match(/^network\s+(\d+\.\d+\.\d+\.\d+)(?:\/(\d+))?/i);
+      if (ripNetMatch) {
+        ripNetworks.push({
+          id: `rip-${Date.now()}-${ripNetworks.length}`,
+          prefix: ripNetMatch[2] ? `${ripNetMatch[1]}/${ripNetMatch[2]}` : `${ripNetMatch[1]}/24`,
+        });
+        continue;
+      }
+      const ripRedMatch = trimmed.match(/^redistribute\s+(connected|static|ospf|eigrp|isis|rip|bgp)(?:\s+\d+)?(?:\s+metric\s+(\d+))?/i);
+      if (ripRedMatch) {
+        redistributions.push({
+          id: `red-${Date.now()}-${redistributions.length}`,
+          from: ripRedMatch[1].toLowerCase() as NodeConfig['redistributions'][number]['from'],
+          to: 'rip',
+          metric: ripRedMatch[2] ? Number(ripRedMatch[2]) : undefined,
+        });
+        continue;
+      }
+    }
+
     if (currentSection === 'ospf') {
       if (/^bfd\s+all-interfaces$/i.test(trimmed)) {
         ospfBfd = true;
@@ -734,6 +835,15 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       if (/^max-metric\s+router-lsa/i.test(trimmed)) {
         ospfMaxMetricRouterLsa = true;
+        continue;
+      }
+      if (/^default-information\s+originate$/i.test(trimmed)) {
+        ospfDefaultOriginate = true;
+        continue;
+      }
+      const refBwMatch = trimmed.match(/^auto-cost\s+reference-bandwidth\s+(\d+)/i);
+      if (refBwMatch) {
+        ospfReferenceBandwidth = Number(refBwMatch[1]);
         continue;
       }
       const ridMatch = trimmed.match(/^(?:ospf\s+)?router-id\s+(\d+\.\d+\.\d+\.\d+)/i);
@@ -784,6 +894,18 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         });
         continue;
       }
+      const ospfRedMatch = trimmed.match(/^redistribute\s+(connected|static|ospf|eigrp|isis|rip|bgp)(?:\s+\d+)?(?:\s+metric\s+(\d+))?(?:\s+metric-type\s+(1|2))?/i);
+      if (ospfRedMatch) {
+        redistributions.push({
+          id: `red-${Date.now()}-${redistributions.length}`,
+          vrf: currentOspfVrf !== 'default' ? currentOspfVrf : undefined,
+          from: ospfRedMatch[1].toLowerCase() as NodeConfig['redistributions'][number]['from'],
+          to: 'ospf',
+          metric: ospfRedMatch[2] ? Number(ospfRedMatch[2]) : undefined,
+          metricType: ospfRedMatch[3] === '1' ? 'E1' : ospfRedMatch[3] === '2' ? 'E2' : undefined,
+        });
+        continue;
+      }
     }
 
     if (currentSection === 'eigrp') {
@@ -791,9 +913,37 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         eigrpBfd = true;
         continue;
       }
+      const eigrpRidMatch = trimmed.match(/^eigrp\s+router-id\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (eigrpRidMatch) {
+        routerId = eigrpRidMatch[1];
+        continue;
+      }
       const varMatch = trimmed.match(/^variance\s+(\d+)/i);
       if (varMatch) {
         eigrpVariance = Number(varMatch[1]);
+        continue;
+      }
+      const kwMatch = trimmed.match(/^metric\s+weights\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
+      if (kwMatch) {
+        eigrpKValues = [Number(kwMatch[1]), Number(kwMatch[2]), Number(kwMatch[3]), Number(kwMatch[4]), Number(kwMatch[5])];
+        continue;
+      }
+      const eigrpNetMatch = trimmed.match(/^network\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+\.\d+\.\d+\.\d+))?/i);
+      if (eigrpNetMatch) {
+        eigrpNetworks.push({
+          id: `en-${Date.now()}-${eigrpNetworks.length}`,
+          prefix: eigrpNetMatch[2] ? `${eigrpNetMatch[1]}/${wildcardToPrefixLen(eigrpNetMatch[2])}` : `${eigrpNetMatch[1]}/24`,
+        });
+        continue;
+      }
+      const eigrpRedMatch = trimmed.match(/^redistribute\s+(connected|static|ospf|eigrp|isis|rip|bgp)(?:\s+\d+)?(?:\s+metric\s+(\d+))?/i);
+      if (eigrpRedMatch) {
+        redistributions.push({
+          id: `red-${Date.now()}-${redistributions.length}`,
+          from: eigrpRedMatch[1].toLowerCase() as NodeConfig['redistributions'][number]['from'],
+          to: 'eigrp',
+          metric: eigrpRedMatch[2] ? Number(eigrpRedMatch[2]) : undefined,
+        });
         continue;
       }
     }
@@ -827,10 +977,22 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         isisBfd = true;
         continue;
       }
-      const passiveIsis = trimmed.match(/^passive-interface\s+(\S+)/i);
-      if (passiveIsis) {
-        const target = interfaces.find((i) => i.name.toLowerCase() === passiveIsis[1].toLowerCase());
-        if (target) target.passive = true;
+      const isisSumMatch = trimmed.match(/^summary-address\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (isisSumMatch) {
+        isisSummaries.push({
+          id: `isum-${Date.now()}-${isisSummaries.length}`,
+          prefix: `${isisSumMatch[1]}/${maskToPrefixLen(isisSumMatch[2])}`,
+        });
+        continue;
+      }
+      const isisRedMatch = trimmed.match(/^redistribute\s+(connected|static|ospf|eigrp|isis|rip|bgp)(?:\s+\d+)?(?:\s+metric\s+(\d+))?/i);
+      if (isisRedMatch) {
+        redistributions.push({
+          id: `red-${Date.now()}-${redistributions.length}`,
+          from: isisRedMatch[1].toLowerCase() as NodeConfig['redistributions'][number]['from'],
+          to: 'isis',
+          metric: isisRedMatch[2] ? Number(isisRedMatch[2]) : undefined,
+        });
         continue;
       }
     }
@@ -921,6 +1083,22 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       if (/^bgp\s+deterministic-med$/i.test(trimmed)) { bgpDeterministicMed = true; continue; }
       if (/^bgp\s+bestpath\s+as-path\s+ignore$/i.test(trimmed)) { bgpBestpathAsPathIgnore = true; continue; }
       if (/^bgp\s+bestpath\s+med\s+missing-as-worst$/i.test(trimmed)) { bgpMedMissingAsWorst = true; continue; }
+      if (/^bgp\s+rpki\s+reject-invalid$/i.test(trimmed)) { bgpRpkiRejectInvalid = true; continue; }
+      if (/^bgp\s+graceful-restart$/i.test(trimmed)) { bgpGracefulRestart = true; continue; }
+      const bgpRedMatch = trimmed.match(/^redistribute\s+(connected|static|ospf|eigrp|isis|rip|bgp)(?:\s+\d+)?(?:\s+metric\s+(\d+))?/i);
+      if (bgpRedMatch) {
+        redistributions.push({
+          id: `red-${Date.now()}-${redistributions.length}`,
+          vrf: currentBgpVrf !== 'default' ? currentBgpVrf : undefined,
+          from: bgpRedMatch[1].toLowerCase() as NodeConfig['redistributions'][number]['from'],
+          to: 'bgp',
+          metric: bgpRedMatch[2] ? Number(bgpRedMatch[2]) : undefined,
+        });
+        continue;
+      }
+      const findBgpPeer = (ip: string) =>
+        bgpPeers.find((p) => p.peerIp === ip && (p.vrf || 'default') === currentBgpVrf) ??
+        bgpPeers.find((p) => p.peerIp === ip);
       const ridMatch = trimmed.match(/^(?:bgp\s+)?router-id\s+(\d+\.\d+\.\d+\.\d+)/i);
       if (ridMatch) {
         if (currentBgpVrf === 'default') routerId = ridMatch[1];
@@ -964,6 +1142,8 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         if (scMatch) { currentBgpPeer.sendCommunity = (scMatch[1]?.toLowerCase() as 'standard' | 'extended' | 'both') ?? 'standard'; continue; }
         const mpMatch = trimmed.match(/^maximum-prefix\s+(\d+)/i);
         if (mpMatch) { currentBgpPeer.maxPrefixes = Number(mpMatch[1]); continue; }
+        if (/^fall-over\s+bfd$/i.test(trimmed)) { currentBgpPeer.bfd = true; continue; }
+        if (/^graceful-restart$/i.test(trimmed)) { currentBgpPeer.gracefulRestart = true; continue; }
         const tm = trimmed.match(/^timers\s+(\d+)\s+(\d+)/i);
         if (tm) { currentBgpPeer.keepaliveTime = Number(tm[1]); currentBgpPeer.holdTime = Number(tm[2]); continue; }
       }
@@ -1002,31 +1182,65 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       const multihopMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+ebgp-multihop/i);
       if (multihopMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === multihopMatch[1]);
+        const peer = findBgpPeer(multihopMatch[1]);
         if (peer) peer.ebgpMultihop = true;
+        continue;
+      }
+      if (/^neighbor\s+\d+\.\d+\.\d+\.\d+\s+next-hop-self$/i.test(trimmed)) {
+        const ip = trimmed.split(/\s+/)[1];
+        const peer = findBgpPeer(ip);
+        if (peer) peer.nextHopSelf = true;
+        continue;
+      }
+      if (/^neighbor\s+\d+\.\d+\.\d+\.\d+\s+default-originate$/i.test(trimmed)) {
+        const ip = trimmed.split(/\s+/)[1];
+        const peer = findBgpPeer(ip);
+        if (peer) peer.defaultOriginate = true;
+        continue;
+      }
+      if (/^neighbor\s+\d+\.\d+\.\d+\.\d+\s+route-reflector-client$/i.test(trimmed)) {
+        const ip = trimmed.split(/\s+/)[1];
+        const peer = findBgpPeer(ip);
+        if (peer) peer.routeReflectorClient = true;
+        continue;
+      }
+      const weightMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+weight\s+(\d+)/i);
+      if (weightMatch) {
+        const peer = findBgpPeer(weightMatch[1]);
+        if (peer) peer.weight = Number(weightMatch[2]);
+        continue;
+      }
+      const rmNbrMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+route-map\s+(\S+)\s+(in|out)$/i);
+      if (rmNbrMatch) {
+        const peer = findBgpPeer(rmNbrMatch[1]);
+        const rm = routeMaps.find((m) => m.name === rmNbrMatch[2]);
+        if (peer && rm) {
+          if (rmNbrMatch[3].toLowerCase() === 'in') peer.routeMapInId = rm.id;
+          else peer.routeMapOutId = rm.id;
+        }
         continue;
       }
       const bfdMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+fall-over\s+bfd/i);
       if (bfdMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === bfdMatch[1]);
+        const peer = findBgpPeer(bfdMatch[1]);
         if (peer) peer.bfd = true;
         continue;
       }
       const softReconfigMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+soft-reconfiguration\s+inbound/i);
       if (softReconfigMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === softReconfigMatch[1]);
+        const peer = findBgpPeer(softReconfigMatch[1]);
         if (peer) peer.softReconfigurationInbound = true;
         continue;
       }
       const grNbrMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+graceful-restart/i);
       if (grNbrMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === grNbrMatch[1]);
+        const peer = findBgpPeer(grNbrMatch[1]);
         if (peer) peer.gracefulRestart = true;
         continue;
       }
       const timersMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+timers\s+(\d+)\s+(\d+)/i);
       if (timersMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === timersMatch[1]);
+        const peer = findBgpPeer(timersMatch[1]);
         if (peer) {
           peer.keepaliveTime = Number(timersMatch[2]);
           peer.holdTime = Number(timersMatch[3]);
@@ -1109,6 +1323,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         const tail = aggMatch[3].toLowerCase();
         bgpAggregates.push({
           id: `ba-${Date.now()}-${bgpAggregates.length}`,
+          vrf: currentBgpVrf !== 'default' ? currentBgpVrf : undefined,
           prefix: `${aggMatch[1]}/${maskToPrefixLen(aggMatch[2])}`,
           summaryOnly: tail.includes('summary-only'),
           asSet: tail.includes('as-set') || undefined,
@@ -1186,6 +1401,20 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         nextHop: staticVrfMatch[4],
         globalNextHop: Boolean(staticVrfMatch[5]),
         ad: staticVrfMatch[6] ? Number(staticVrfMatch[6]) : undefined,
+      });
+      continue;
+    }
+
+    const staticCidrMatch = trimmed.match(
+      /^ip\s+route\s+(\d+\.\d+\.\d+\.\d+\/\d+)\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+))?/i
+    );
+    if (staticCidrMatch) {
+      staticRoutes.push({
+        id: `sr-${Date.now()}-${staticRoutes.length}`,
+        vrf: 'default',
+        prefix: staticCidrMatch[1],
+        nextHop: staticCidrMatch[2],
+        ad: staticCidrMatch[3] ? Number(staticCidrMatch[3]) : undefined,
       });
       continue;
     }
@@ -1270,6 +1499,8 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     staticRoutes,
     ospf: {
       enabled: ospfEnabled,
+      defaultOriginate: ospfDefaultOriginate || undefined,
+      referenceBandwidth: ospfReferenceBandwidth,
       bfd: ospfBfd || undefined,
       maxMetricRouterLsa: ospfMaxMetricRouterLsa || undefined,
       areaTypes: Object.keys(ospfAreaTypes).length ? ospfAreaTypes : undefined,
@@ -1278,8 +1509,9 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       virtualLinks: ospfVirtualLinks.length ? ospfVirtualLinks : undefined,
       networks: ospfNetworks,
     },
-    eigrp: eigrpEnabled ? { enabled: true, asn: eigrpAsn, bfd: eigrpBfd || undefined, variance: eigrpVariance, networks: [] } : undefined,
-    isis: isisEnabled ? { enabled: true, net: isisNet, bfd: isisBfd || undefined, overloadBit: isisOverloadBit || undefined, metricStyle: isisMetricStyle, multiTopologyV6: isisMultiTopologyV6 || undefined, level: isisLevel, networks: [] } : undefined,
+    eigrp: eigrpEnabled ? { enabled: true, asn: eigrpAsn, bfd: eigrpBfd || undefined, variance: eigrpVariance, kValues: eigrpKValues, networks: eigrpNetworks } : undefined,
+    isis: isisEnabled ? { enabled: true, net: isisNet, bfd: isisBfd || undefined, overloadBit: isisOverloadBit || undefined, metricStyle: isisMetricStyle, multiTopologyV6: isisMultiTopologyV6 || undefined, level: isisLevel, summaries: isisSummaries.length ? isisSummaries : undefined, networks: [] } : undefined,
+    rip: ripEnabled ? { enabled: true, version: ripVersion, defaultOriginate: ripDefaultOriginate || undefined, networks: ripNetworks } : undefined,
     bgp: {
       enabled: bgpEnabled,
       asn: bgpAsn,
@@ -1290,6 +1522,8 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       deterministicMed: bgpDeterministicMed || undefined,
       bestpathAsPathIgnore: bgpBestpathAsPathIgnore || undefined,
       medMissingAsWorst: bgpMedMissingAsWorst || undefined,
+      rpkiRejectInvalid: bgpRpkiRejectInvalid || undefined,
+      gracefulRestart: bgpGracefulRestart || undefined,
       peers: bgpPeers,
       networks: bgpNetworks,
       aggregates: bgpAggregates.length ? bgpAggregates : undefined,
@@ -1305,7 +1539,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         eidPrefixes: lispEidPrefixes,
       }
       : undefined,
-    redistributions: [],
+    redistributions,
     prefixLists: [],
     routeMaps,
     vrfLeaks: [],
@@ -1327,6 +1561,9 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
   const vrfs = new Set<string>(['default']);
   const interfaces: InterfaceConfig[] = [];
   const staticRoutes: StaticRouteConfig[] = [];
+  let ospfEnabled = false;
+  let ospfRouterId = '';
+  let ripEnabled = false;
   let bgpEnabled = false;
   let bgpAsn = 65000;
   let bgpRouterId = routerId;
@@ -1345,6 +1582,8 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
     if (/^config\s+system\s+global$/i.test(t)) { block = 'global'; nestedUnknownDepth = 0; continue; }
     if (/^config\s+system\s+interface$/i.test(t)) { block = 'interface'; nestedUnknownDepth = 0; continue; }
     if (/^config\s+router\s+static$/i.test(t)) { block = 'static'; nestedUnknownDepth = 0; continue; }
+    if (/^config\s+router\s+ospf$/i.test(t)) { block = 'ospf'; ospfEnabled = true; nestedUnknownDepth = 0; continue; }
+    if (/^config\s+router\s+rip$/i.test(t)) { block = 'rip'; ripEnabled = true; nestedUnknownDepth = 0; continue; }
     if (/^config\s+router\s+bgp$/i.test(t)) { block = 'bgp'; nestedUnknownDepth = 0; continue; }
     if (/^config\s+neighbor$/i.test(t) && block === 'bgp') { subBlock = 'neighbor'; continue; }
     if (/^config\s+/i.test(t) && block) { nestedUnknownDepth++; continue; }
@@ -1408,6 +1647,18 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
       if (dm) curStatic.prefix = dm[1];
       const gm = t.match(/^set\s+gateway\s+(\d+\.\d+\.\d+\.\d+)/i);
       if (gm) curStatic.nextHop = gm[1];
+    } else if ((block === 'ospf' || block === 'rip') && !subBlock) {
+      const rm = t.match(/^set\s+router-id\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (rm) ospfRouterId = rm[1];
+      const pm = t.match(/^set\s+passive-interface\s+(.+)/i);
+      if (pm) {
+        const names = pm[1].match(/"[^"]+"|\S+/g) ?? [];
+        for (const rawName of names) {
+          const cleanName = rawName.replace(/^"|"$/g, '').toLowerCase();
+          const target = interfaces.find((i) => i.name.toLowerCase() === cleanName);
+          if (target) target.passive = true;
+        }
+      }
     } else if (block === 'bgp' && !subBlock) {
       const am = t.match(/^set\s+as\s+(\d+)/i);
       if (am) bgpAsn = Number(am[1]);
@@ -1428,14 +1679,15 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
     id: `imp-${Date.now()}-${++importIdSeq}`,
     hostname,
     vendor: 'fortigate',
-    routerId: bgpRouterId,
+    routerId: ospfRouterId || bgpRouterId,
     position: { x: 240, y: 140 },
     maxPaths: 4,
     vrfs: Array.from(vrfs),
     adOverrides: {},
     interfaces: validInterfaces,
     staticRoutes,
-    ospf: { enabled: false, networks: [] },
+    ospf: { enabled: ospfEnabled, networks: [] },
+    rip: ripEnabled ? { enabled: true, version: 2, networks: [] } : undefined,
     bgp: { enabled: bgpEnabled, asn: bgpAsn, peers: bgpPeers, networks: [] },
     redistributions: [],
     prefixLists: [],
@@ -1448,9 +1700,11 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
   let hostname = 'JUNOS-IMPORTED';
   let routerId = '10.255.0.20';
   const vrfs = new Set<string>(['default']);
-  const ifaceMap = new Map<string, { cidr: string; cidr6?: string; vrf: string; ospfArea?: number }>();
+  const ifaceMap = new Map<string, { cidr: string; cidr6?: string; vrf: string; ospfArea?: number; isisLevel?: 'L1' | 'L2'; passive?: boolean }>();
   const staticRoutes: StaticRouteConfig[] = [];
   let ospfEnabled = false;
+  let isisEnabled = false;
+  let ripEnabled = false;
   let bgpEnabled = false;
   let bgpAsn = 65000;
   const bgpPeers: BgpPeerConfig[] = [];
@@ -1512,7 +1766,7 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
     }
 
     const ospfIfMatch = line.match(
-      /^set\s+protocols\s+ospf\s+area\s+(\S+)\s+interface\s+(\S+)/i
+      /^set\s+protocols\s+ospf\s+area\s+(\S+)\s+interface\s+(\S+)(?:\s+(passive))?/i
     );
     if (ospfIfMatch) {
       ospfEnabled = true;
@@ -1521,6 +1775,32 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
       const rawIf = ospfIfMatch[2].replace(/\.0$/, '');
       const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ospfIfMatch[2]);
       if (cur && Number.isFinite(areaNum)) cur.ospfArea = areaNum;
+      if (cur && ospfIfMatch[3]) cur.passive = true;
+      continue;
+    }
+
+    const isisIfMatch = line.match(
+      /^set\s+protocols\s+isis\s+interface\s+(\S+)(?:\s+(passive))?/i
+    );
+    if (isisIfMatch) {
+      isisEnabled = true;
+      const rawIf = isisIfMatch[1].replace(/\.0$/, '');
+      const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(isisIfMatch[1]);
+      if (cur) {
+        cur.isisLevel = cur.isisLevel ?? 'L2';
+        if (isisIfMatch[2]) cur.passive = true;
+      }
+      continue;
+    }
+
+    const ripIfMatch = line.match(
+      /^set\s+protocols\s+rip\s+group\s+\S+\s+neighbor\s+(\S+)(?:\s+(passive))?/i
+    );
+    if (ripIfMatch) {
+      ripEnabled = true;
+      const rawIf = ripIfMatch[1].replace(/\.0$/, '');
+      const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ripIfMatch[1]);
+      if (cur && ripIfMatch[2]) cur.passive = true;
       continue;
     }
 
@@ -1574,9 +1854,13 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
       cidr6: info.cidr6,
       vrf: info.vrf,
       ospfArea: info.ospfArea,
+      isisLevel: info.isisLevel,
+      passive: info.passive,
     })),
     staticRoutes,
     ospf: { enabled: ospfEnabled, networks: [] },
+    isis: isisEnabled ? { enabled: true, level: 'L1-L2', networks: [] } : undefined,
+    rip: ripEnabled ? { enabled: true, version: 2, networks: [] } : undefined,
     bgp: { enabled: bgpEnabled, asn: bgpAsn, peers: bgpPeers, networks: [] },
     redistributions: [],
     prefixLists: [],
@@ -1589,7 +1873,7 @@ function parseMikrotikConfig(lines: string[]): NodeConfig {
   let hostname = 'MIKROTIK-IMPORTED';
   let routerId = '10.255.0.30';
   const vrfs = new Set<string>(['default']);
-  const ifaceMap = new Map<string, { cidr: string; cidr6?: string; vrf: string; ospfArea?: number }>();
+  const ifaceMap = new Map<string, { cidr: string; cidr6?: string; vrf: string; ospfArea?: number; isisLevel?: 'L1' | 'L2'; passive?: boolean }>();
   const staticRoutes: StaticRouteConfig[] = [];
   let ospfEnabled = false;
   let bgpEnabled = false;
@@ -1686,11 +1970,15 @@ function parseMikrotikConfig(lines: string[]): NodeConfig {
       ospfEnabled = true;
       const areaM = line.match(/area="?([^"\s]+)"?/i);
       const ifM = line.match(/interfaces=([^\s]+)/i);
+      const isPassive = /\bpassive=(?:yes|true)\b/i.test(line) || /\bpassive\b(?!\s*=)/i.test(line);
       const areaNum = areaM ? (ospfAreas.get(areaM[1]) ?? (Number(areaM[1]) || 0)) : 0;
       if (ifM) {
         for (const ifName of ifM[1].split(',')) {
           const cur = ifaceMap.get(ifName);
-          if (cur) cur.ospfArea = areaNum;
+          if (cur) {
+            cur.ospfArea = areaNum;
+            if (isPassive) cur.passive = true;
+          }
         }
       }
       continue;
@@ -1736,6 +2024,7 @@ function parseMikrotikConfig(lines: string[]): NodeConfig {
       cidr6: info.cidr6,
       vrf: info.vrf,
       ospfArea: info.ospfArea,
+      passive: info.passive,
     })),
     staticRoutes,
     ospf: { enabled: ospfEnabled, networks: [] },
@@ -1812,4 +2101,270 @@ export function importTopologyFromText(raw: string): TopologyState {
           ? parsePanOsSetConfig(lines)
           : parseCiscoStyleConfig(lines);
   return { nodes: [node], links: [] };
+}
+
+export interface ConfigValidationIssue {
+  line: number;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+function isValidIpv4(ip: string): boolean {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return false;
+  return parts.every((p) => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+
+function isValidIpv4Mask(mask: string): boolean {
+  if (!isValidIpv4(mask)) return false;
+  const num = mask
+    .split('.')
+    .reduce((acc, oct) => ((acc << 8) | Number(oct)) >>> 0, 0);
+  if (num === 0) return true;
+  const inv = (~num) >>> 0;
+  return (inv & (inv + 1)) === 0;
+}
+
+function isValidIpv4Cidr(cidr: string): boolean {
+  const [ip, lenStr] = cidr.split('/');
+  if (!ip || lenStr === undefined || !/^\d+$/.test(lenStr)) return false;
+  const len = Number(lenStr);
+  return isValidIpv4(ip) && len >= 0 && len <= 32;
+}
+
+const KNOWN_CISCO_GLOBAL_RE =
+  /^(?:version|hostname|service|no\s+|enable|boot|logging|ip\s+(?:vrf|route|prefix-list|access-list|nat|sla|dhcp|pim|multicast|routing|cef|domain|name-server|ssh)|ipv6\s+(?:unicast-routing|route)|vrf\s+(?:definition|context)|rd\s+|route-target\s+|address-family\s+|exit-address-family|interface\s+|router\s+(?:ospf|bgp|eigrp|isis|rip|lisp)|route-map\s+|match\s+|set\s+|vpc\s+domain|mlag\s+configuration|spanning-tree\s+|lldp\s+run|mpls\s+|segment-routing|ptp\s+|ntp\s+|bmp\s+|flow\s+|access-list\s+|track\s+|crypto\s+|feature\s+|evpn|vni\s+|member\s+|source-interface|host-reachability|exit\b|end\b)/i;
+
+const KNOWN_CISCO_SUB_RE =
+  /^(?:description|vrf\s+(?:forwarding|member)|ip\s+(?:address|unnumbered|verify|ospf|router\s+ospf|router\s+isis|summary-address|hello-interval|hold-time|bandwidth-percent|pim|helper-address|dhcp|arp|access-group|nat|policy)|ipv6\s+(?:address|ospf|nd)|encapsulation\s+dot1[qQ]|switchport|no\s+|shutdown|passive-interface|mtu\s+|speed\s+|bandwidth\s+|delay\s+|standby\s+|vrrp\s+|glbp\s+|channel-group\s+|channel-protocol\s+|vpc\s+|mlag\s+|macsec|dot1x|evpn\s+|isis\s+|bfd\s+|router-id|eigrp\s+|bgp\s+|neighbor\s+|network\s+|redistribute\s+|default-information|default-metric|auto-cost|max-metric|variance\s+|area\s+|maximum-paths|timers\s+|net\s+|is-type|metric-style|metric\s+|set-overload-bit|multi-topology|summary-address|aggregate-address|distance\s+|auto-summary|version\s+|address-family|exit-address-family|locator-table|instance-id|rloc-probing|service\s+ipv4|eid-prefix|database-mapping|map-server|map-resolver|itr\b|etr\b|proxy-itr|proxy-etr|role\s+priority|system-priority|peer-keepalive|peer-gateway|peer-switch|layer3\s+peer-router|auto-recovery|ip\s+arp\s+synchronize|delay\s+restore|domain-id|local-interface|peer-address|peer-link|reload-delay|rd\s+|route-target\s+|seq\s+|permit\b|deny\b|remark\b|match\s+|set\s+|exit\b)/i;
+
+export function validateRunningConfig(text: string): ConfigValidationIssue[] {
+  const issues: ConfigValidationIssue[] = [];
+  const rawLines = text.split(/\r?\n/);
+  const trimmedNonEmpty = rawLines.map((l) => l.trim()).filter((l) => l && !l.startsWith('!') && !l.startsWith('#'));
+
+  if (trimmedNonEmpty.length === 0) {
+    issues.push({ line: 1, severity: 'error', message: 'Configuration is empty.' });
+    return issues;
+  }
+
+  // JSON / YAML topology skip line-by-line CLI syntax checks (JSON validated via JSON.parse)
+  const firstLine = trimmedNonEmpty[0];
+  if (firstLine.startsWith('{') || firstLine.startsWith('[')) {
+    try {
+      JSON.parse(text);
+    } catch (err) {
+      issues.push({
+        line: 1,
+        severity: 'error',
+        message: `Invalid JSON: ${err instanceof Error ? err.message : 'syntax error'}`,
+      });
+    }
+    return issues;
+  }
+  if (/^(?:nodes|links|name|topology):/i.test(firstLine)) {
+    return issues;
+  }
+
+  const isForti = rawLines.some((l) => /^config\s+(?:system|router|firewall|vpn)/i.test(l.trim()));
+  const isMikrotik = !isForti && rawLines.some((l) => /^\/(?:ip|ipv6|system|routing|interface)\b/i.test(l.trim()));
+  const isSetStyle =
+    !isForti &&
+    !isMikrotik &&
+    rawLines.some((l) => /^set\s+/i.test(l.trim())) &&
+    !rawLines.some((l) => /^(?:interface\s+\S+|router\s+(?:ospf|bgp|eigrp|isis|rip))/i.test(l.trim()));
+
+  if (isForti) {
+    let depth = 0;
+    rawLines.forEach((raw, idx) => {
+      const t = raw.trim();
+      if (!t || t.startsWith('#') || t.startsWith('!')) return;
+      if (/^config\s+/i.test(t)) depth++;
+      else if (/^end$/i.test(t)) {
+        if (depth === 0) {
+          issues.push({ line: idx + 1, severity: 'error', message: 'Unexpected "end" without matching "config".' });
+        } else {
+          depth--;
+        }
+      }
+    });
+    if (depth > 0) {
+      issues.push({ line: rawLines.length, severity: 'error', message: `Unclosed FortiGate "config" block (${depth} missing "end").` });
+    }
+    return issues;
+  }
+
+  if (isMikrotik || isSetStyle) {
+    return issues;
+  }
+
+  let section: 'none' | 'interface' | 'bgp' | 'router' | 'vrf' | 'routemap' | 'acl' | 'other' = 'none';
+
+  rawLines.forEach((raw, idx) => {
+    const lineNum = idx + 1;
+    const t = raw.trim();
+    if (!t || t.startsWith('!') || t.startsWith('#')) {
+      if (t === '!') section = 'none';
+      return;
+    }
+
+    if (/^interface\s+/i.test(t)) {
+      if (!/^interface\s+\S+/i.test(t)) {
+        issues.push({ line: lineNum, severity: 'error', message: `Missing interface name in "${t}".` });
+      }
+      section = 'interface';
+      return;
+    }
+
+    const bgpStart = t.match(/^router\s+bgp\s+(\S+)/i);
+    if (bgpStart) {
+      const asn = Number(bgpStart[1]);
+      if (!Number.isInteger(asn) || asn < 1 || asn > 4294967295) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid BGP ASN "${bgpStart[1]}" (must be 1-4294967295).` });
+      }
+      section = 'bgp';
+      return;
+    }
+
+    if (/^router\s+(?:ospf|eigrp|isis|rip|lisp)\b/i.test(t)) {
+      section = 'router';
+      return;
+    }
+    if (/^(?:ip\s+)?vrf\s+(?:definition|context)\s+\S+/i.test(t) || /^ip\s+vrf\s+\S+$/i.test(t)) {
+      section = 'vrf';
+      return;
+    }
+    if (/^route-map\s+\S+/i.test(t)) {
+      section = 'routemap';
+      return;
+    }
+    if (/^ip\s+access-list\s+/i.test(t)) {
+      section = 'acl';
+      return;
+    }
+    if (/^(?:vpc\s+domain|mlag\s+configuration)/i.test(t)) {
+      section = 'other';
+      return;
+    }
+
+    // Interface-only subcommands used outside an interface block
+    if (
+      section !== 'interface' &&
+      /^(?:ip\s+address|encapsulation\s+dot1[qQ]|channel-group|switchport|shutdown)\b/i.test(t)
+    ) {
+      issues.push({
+        line: lineNum,
+        severity: 'error',
+        message: `"${t}" must be inside an "interface <name>" block.`,
+      });
+    }
+
+    // BGP-only subcommands used outside router bgp
+    if (section !== 'bgp' && /^(?:neighbor\s+\S+\s+remote-as|bgp\s+router-id)\b/i.test(t)) {
+      issues.push({
+        line: lineNum,
+        severity: 'error',
+        message: `"${t}" must be inside a "router bgp <asn>" block.`,
+      });
+    }
+
+    // Validate ip address syntax
+    if (/^ip\s+address\b/i.test(t) && !/^ip\s+address\s+dhcp\b/i.test(t)) {
+      const mMask = t.match(/^ip\s+address\s+(\S+)\s+(\S+)(?:\s+secondary)?$/i);
+      const mCidr = t.match(/^ip\s+address\s+(\S+\/\S+)(?:\s+secondary)?$/i);
+      if (mCidr) {
+        if (!isValidIpv4Cidr(mCidr[1])) {
+          issues.push({ line: lineNum, severity: 'error', message: `Invalid IPv4 CIDR "${mCidr[1]}".` });
+        }
+      } else if (mMask) {
+        if (!isValidIpv4(mMask[1]) || !isValidIpv4Mask(mMask[2])) {
+          issues.push({ line: lineNum, severity: 'error', message: `Invalid IPv4 address or subnet mask in "${t}".` });
+        }
+      } else {
+        issues.push({ line: lineNum, severity: 'error', message: `Malformed "ip address" statement: "${t}".` });
+      }
+      return;
+    }
+
+    // Validate encapsulation dot1Q <1-4094>
+    const encap = t.match(/^encapsulation\s+dot1[qQ]\s+(\S+)/i);
+    if (encap) {
+      const vlan = Number(encap[1]);
+      if (!Number.isInteger(vlan) || vlan < 1 || vlan > 4094) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid 802.1Q VLAN ID "${encap[1]}" (must be 1-4094).` });
+      }
+      return;
+    }
+
+    // Validate mtu <68-9216>
+    const mtuMatch = t.match(/^mtu\s+(\S+)/i);
+    if (mtuMatch) {
+      const mtu = Number(mtuMatch[1]);
+      if (!Number.isInteger(mtu) || mtu < 68 || mtu > 9216) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid MTU "${mtuMatch[1]}" (must be 68-9216).` });
+      }
+      return;
+    }
+
+    // Validate channel-group <n> mode <mode>
+    const cgMatch = t.match(/^channel-group\s+(\S+)(?:\s+mode\s+(\S+))?/i);
+    if (cgMatch) {
+      const grp = Number(cgMatch[1]);
+      if (!Number.isInteger(grp) || grp < 1 || grp > 4096) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid channel-group number "${cgMatch[1]}".` });
+      }
+      if (cgMatch[2] && !/^(?:active|passive|desirable|auto|on)$/i.test(cgMatch[2])) {
+        issues.push({
+          line: lineNum,
+          severity: 'error',
+          message: `Invalid channel-group mode "${cgMatch[2]}" (expected active, passive, desirable, auto, or on).`,
+        });
+      }
+      return;
+    }
+
+    // Validate neighbor <ip> remote-as <asn>
+    const nbrAs = t.match(/^neighbor\s+(\S+)\s+remote-as\s+(\S+)/i);
+    if (nbrAs) {
+      const asn = Number(nbrAs[2]);
+      if (!isValidIpv4(nbrAs[1]) && !nbrAs[1].includes(':')) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid BGP neighbor IP "${nbrAs[1]}".` });
+      }
+      if (!Number.isInteger(asn) || asn < 1 || asn > 4294967295) {
+        issues.push({ line: lineNum, severity: 'error', message: `Invalid neighbor remote-as "${nbrAs[2]}".` });
+      }
+      return;
+    }
+
+    // Validate static ip route
+    if (/^ip\s+route\b/i.test(t)) {
+      const okVrfMask = /^ip\s+route\s+vrf\s+\S+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
+      const okVrfCidr = /^ip\s+route\s+vrf\s+\S+\s+\d+\.\d+\.\d+\.\d+\/\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
+      const okMask = /^ip\s+route\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
+      const okCidr = /^ip\s+route\s+\d+\.\d+\.\d+\.\d+\/\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
+      if (!okVrfMask && !okVrfCidr && !okMask && !okCidr) {
+        issues.push({
+          line: lineNum,
+          severity: 'error',
+          message: `Malformed static route "${t}" (expected "ip route <prefix> <mask|/> <next-hop>").`,
+        });
+      }
+      return;
+    }
+
+    // Check unknown / misspelled commands
+    const recognized =
+      section === 'none'
+        ? KNOWN_CISCO_GLOBAL_RE.test(t)
+        : KNOWN_CISCO_SUB_RE.test(t) || KNOWN_CISCO_GLOBAL_RE.test(t);
+    if (!recognized) {
+      issues.push({
+        line: lineNum,
+        severity: 'warning',
+        message: `Unrecognized or possibly misspelled command: "${t}".`,
+      });
+    }
+  });
+
+  return issues;
 }

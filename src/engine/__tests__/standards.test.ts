@@ -988,4 +988,573 @@ describe('Additional IETF & IEEE Standards (MPLS/SR, RSTP/LLDP, PIM-SM, FlowSpec
     expect(matrix.failed).toBe(0);
     expect(matrix.passed).toBe(3);
   });
+
+  it('enforces RFC 2328 OSPF v2 standards (area type & MTU mismatch, priority-0 2-Way, E2 ASBR cost tie-break, virtual links)', () => {
+    const topo: TopologyState = {
+      nodes: [
+        {
+          id: 'r1',
+          hostname: 'R1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'r1-g0', name: 'Gi0/0', cidr: '10.0.12.1/30', vrf: 'default', ospfArea: 1, ospfCost: 10 },
+            { id: 'r1-g1', name: 'Gi0/1', cidr: '10.0.13.1/30', vrf: 'default', ospfArea: 2, mtu: 1500 },
+            { id: 'r1-g2', name: 'Gi0/2', cidr: '10.0.14.1/30', vrf: 'default', ospfArea: 3, ospfPriority: 0 },
+          ],
+          staticRoutes: [],
+          ospf: {
+            enabled: true,
+            areaTypes: { 1: 'stub' },
+            networks: [],
+          },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'r2',
+          hostname: 'R2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'r2-g0', name: 'Gi0/0', cidr: '10.0.12.2/30', vrf: 'default', ospfArea: 1, ospfCost: 10 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, networks: [] }, // normal vs stub -> mismatch
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'r3',
+          hostname: 'R3',
+          vendor: 'cisco-ios-xe',
+          routerId: '3.3.3.3',
+          position: { x: 100, y: 100 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'r3-g0', name: 'Gi0/0', cidr: '10.0.13.2/30', vrf: 'default', ospfArea: 2, mtu: 1400 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'r4',
+          hostname: 'R4',
+          vendor: 'cisco-ios-xe',
+          routerId: '4.4.4.4',
+          position: { x: 100, y: 200 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'r4-g0', name: 'Gi0/0', cidr: '10.0.14.2/30', vrf: 'default', ospfArea: 3, ospfPriority: 0 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l12', sourceNodeId: 'r1', sourceInterfaceId: 'r1-g0', targetNodeId: 'r2', targetInterfaceId: 'r2-g0' },
+        { id: 'l13', sourceNodeId: 'r1', sourceInterfaceId: 'r1-g1', targetNodeId: 'r3', targetInterfaceId: 'r3-g0' },
+        { id: 'l14', sourceNodeId: 'r1', sourceInterfaceId: 'r1-g2', targetNodeId: 'r4', targetInterfaceId: 'r4-g0' },
+      ],
+    };
+
+    const res = solveTopology(topo);
+    const r1Nbrs = res.nodes['r1']?.neighbors?.filter((n) => n.protocol === 'ospf') ?? [];
+    expect(r1Nbrs.find((n) => n.neighborId === '2.2.2.2')?.state).toBe('Down');
+    expect(r1Nbrs.find((n) => n.neighborId === '3.3.3.3')?.state).toBe('ExStart');
+    expect(r1Nbrs.find((n) => n.neighborId === '4.4.4.4')?.state).toBe('2-Way');
+
+    // RFC 2328 §16.4(6)(c) E2 tie-breaking by internal cost + §15 Virtual Link across transit Area 1
+    const vlinkTopo: TopologyState = {
+      nodes: [
+        {
+          id: 'abr1',
+          hostname: 'ABR1',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.10.10.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'a1-0', name: 'Lo0', cidr: '10.100.0.1/32', vrf: 'default', ospfArea: 0 },
+            { id: 'a1-1', name: 'Gi0/0', cidr: '10.1.0.1/30', vrf: 'default', ospfArea: 1, ospfCost: 10 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, virtualLinks: [{ id: 'vl1', transitArea: 1, peerRouterId: '10.10.10.2' }], networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'abr2',
+          hostname: 'ABR2',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.10.10.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'a2-0', name: 'Gi0/0', cidr: '10.1.0.2/30', vrf: 'default', ospfArea: 1, ospfCost: 10 },
+            { id: 'a2-1', name: 'Gi0/1', cidr: '10.2.0.1/30', vrf: 'default', ospfArea: 0, ospfCost: 5 },
+            { id: 'a2-2', name: 'Gi0/2', cidr: '10.3.0.1/30', vrf: 'default', ospfArea: 0, ospfCost: 50 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: true, virtualLinks: [{ id: 'vl2', transitArea: 1, peerRouterId: '10.10.10.1' }], networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'asbr1',
+          hostname: 'ASBR1',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.10.10.3',
+          position: { x: 200, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 's1-0', name: 'Gi0/1', cidr: '10.2.0.2/30', vrf: 'default', ospfArea: 0, ospfCost: 5 },
+            { id: 's1-1', name: 'Gi0/2', cidr: '10.3.0.2/30', vrf: 'default', ospfArea: 0, ospfCost: 50 },
+          ],
+          staticRoutes: [{ id: 'sr-ext', vrf: 'default', prefix: '198.51.100.0/24', nextHop: '0.0.0.0', interfaceName: 'Null0' }],
+          ospf: { enabled: true, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [{ id: 'red-ext', from: 'static', to: 'ospf', metric: 20, metricType: 'E2' }],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l-vl', sourceNodeId: 'abr1', sourceInterfaceId: 'a1-1', targetNodeId: 'abr2', targetInterfaceId: 'a2-0' },
+        { id: 'l-fast', sourceNodeId: 'abr2', sourceInterfaceId: 'a2-1', targetNodeId: 'asbr1', targetInterfaceId: 's1-0' },
+        { id: 'l-slow', sourceNodeId: 'abr2', sourceInterfaceId: 'a2-2', targetNodeId: 'asbr1', targetInterfaceId: 's1-1' },
+      ],
+    };
+
+    const vlRes = solveTopology(vlinkTopo);
+    // ABR2 reaches E2 198.51.100.0/24 via lowest internal-cost path (Gi0/1 cost 5, not Gi0/2 cost 50)
+    const abr2Ext = vlRes.nodes['abr2']?.rib.filter((r) => r.prefix === '198.51.100.0' && r.active) ?? [];
+    expect(abr2Ext).toHaveLength(1);
+    expect(abr2Ext[0]?.egressInterface).toBe('Gi0/1');
+    expect(abr2Ext[0]?.metric).toBe(20);
+    // ABR1 learns Area 0 route 10.2.0.0/30 across the virtual link via ABR2
+    expect(vlRes.nodes['abr1']?.rib.some((r) => r.prefix === '10.2.0.0' && r.protocol === 'ospf' && r.active)).toBe(true);
+  });
+
+  it('enforces RFC 7868 EIGRP standards (K-value mismatch, DUAL feasibility, variance, and external AD 170)', () => {
+    const topo: TopologyState = {
+      nodes: [
+        {
+          id: 'e1',
+          hostname: 'E1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'e1-g0', name: 'Gi0/0', cidr: '10.10.12.1/30', vrf: 'default' },
+            { id: 'e1-g1', name: 'Gi0/1', cidr: '10.10.13.1/30', vrf: 'default' },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          eigrp: { enabled: true, asn: 100, kValues: [1, 0, 1, 0, 0], networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'e2',
+          hostname: 'E2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'e2-g0', name: 'Gi0/0', cidr: '10.10.12.2/30', vrf: 'default' },
+          ],
+          staticRoutes: [{ id: 'sr-e2', vrf: 'default', prefix: '203.0.113.0/24', nextHop: '0.0.0.0', interfaceName: 'Null0' }],
+          ospf: { enabled: false, networks: [] },
+          eigrp: { enabled: true, asn: 100, kValues: [1, 0, 1, 0, 0], networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [{ id: 'red-e2', from: 'static', to: 'eigrp', metric: 100 }],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'e3',
+          hostname: 'E3-KMISMATCH',
+          vendor: 'cisco-ios-xe',
+          routerId: '3.3.3.3',
+          position: { x: 100, y: 100 },
+          maxPaths: 4,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'e3-g0', name: 'Gi0/0', cidr: '10.10.13.2/30', vrf: 'default' },
+            { id: 'e3-lo', name: 'Lo0', cidr: '10.99.99.1/32', vrf: 'default' },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          eigrp: { enabled: true, asn: 100, kValues: [1, 1, 1, 0, 0], networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l-e12', sourceNodeId: 'e1', sourceInterfaceId: 'e1-g0', targetNodeId: 'e2', targetInterfaceId: 'e2-g0' },
+        { id: 'l-e13', sourceNodeId: 'e1', sourceInterfaceId: 'e1-g1', targetNodeId: 'e3', targetInterfaceId: 'e3-g0' },
+      ],
+    };
+
+    const res = solveTopology(topo);
+    const e1Nbrs = res.nodes['e1']?.neighbors?.filter((n) => n.protocol === 'eigrp') ?? [];
+    expect(e1Nbrs.find((n) => n.neighborId === 'E2')?.state).toBe('Up');
+    expect(e1Nbrs.find((n) => n.neighborId === 'E3-KMISMATCH')?.state).toBe('Down');
+    expect(res.nodes['e1']?.rib.some((r) => r.prefix === '10.99.99.1' && r.protocol === 'eigrp')).toBe(false);
+    const extRoute = res.nodes['e1']?.rib.find((r) => r.prefix === '203.0.113.0' && r.protocol === 'eigrp');
+    expect(extRoute?.ad).toBe(170);
+  });
+
+  it('enforces RFC 4271 BGP-4 standards (MED non-transitivity across eBGP, duplicate Router-ID collision, unacceptable Hold Time)', () => {
+    const topo: TopologyState = {
+      nodes: [
+        {
+          id: 'as1',
+          hostname: 'AS1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'as1-g0', name: 'Gi0/0', cidr: '10.1.12.1/30', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: {
+            enabled: true,
+            asn: 65001,
+            peers: [{ id: 'p1', peerIp: '10.1.12.2', remoteAs: 65002 }],
+            networks: [{ id: 'n1', prefix: '192.0.2.0/24', med: 500 }],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'as2',
+          hostname: 'AS2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'as2-g0', name: 'Gi0/0', cidr: '10.1.12.2/30', vrf: 'default' },
+            { id: 'as2-g1', name: 'Gi0/1', cidr: '10.1.23.1/30', vrf: 'default' },
+            { id: 'as2-g2', name: 'Gi0/2', cidr: '10.1.24.1/30', vrf: 'default' },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: {
+            enabled: true,
+            asn: 65002,
+            peers: [
+              { id: 'p2a', peerIp: '10.1.12.1', remoteAs: 65001 },
+              { id: 'p2b', peerIp: '10.1.23.2', remoteAs: 65003 },
+              { id: 'p2c', peerIp: '10.1.24.2', remoteAs: 65004, holdTime: 2 },
+            ],
+            networks: [],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'as3',
+          hostname: 'AS3',
+          vendor: 'cisco-ios-xe',
+          routerId: '3.3.3.3',
+          position: { x: 200, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'as3-g0', name: 'Gi0/0', cidr: '10.1.23.2/30', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: {
+            enabled: true,
+            asn: 65003,
+            peers: [{ id: 'p3', peerIp: '10.1.23.1', remoteAs: 65002 }],
+            networks: [],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'as4',
+          hostname: 'AS4-BADHOLD',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2', // duplicate Router-ID with AS2 + holdTime 2
+          position: { x: 200, y: 100 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'as4-g0', name: 'Gi0/0', cidr: '10.1.24.2/30', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: {
+            enabled: true,
+            asn: 65004,
+            peers: [{ id: 'p4', peerIp: '10.1.24.1', remoteAs: 65002 }],
+            networks: [{ id: 'n4', prefix: '198.51.100.0/24' }],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l-12', sourceNodeId: 'as1', sourceInterfaceId: 'as1-g0', targetNodeId: 'as2', targetInterfaceId: 'as2-g0' },
+        { id: 'l-23', sourceNodeId: 'as2', sourceInterfaceId: 'as2-g1', targetNodeId: 'as3', targetInterfaceId: 'as3-g0' },
+        { id: 'l-24', sourceNodeId: 'as2', sourceInterfaceId: 'as2-g2', targetNodeId: 'as4', targetInterfaceId: 'as4-g0' },
+      ],
+    };
+
+    const res = solveTopology(topo);
+    // AS2 receives MED 500 from AS1, but strips it when advertising to eBGP peer AS3 (RFC 4271 §5.1.4)
+    expect(res.nodes['as2']?.rib.find((r) => r.prefix === '192.0.2.0')?.metric).toBe(500);
+    expect(res.nodes['as3']?.rib.find((r) => r.prefix === '192.0.2.0')?.metric).toBe(0);
+    // AS4 with duplicate Router-ID / Hold Time 2 stays Down and does not inject 198.51.100.0/24 into AS2
+    const as2Nbrs = res.nodes['as2']?.neighbors?.filter((n) => n.protocol === 'bgp') ?? [];
+    expect(as2Nbrs.find((n) => n.peerIp === '10.1.23.2')?.state).toBe('Established');
+    expect(as2Nbrs.find((n) => n.peerIp === '10.1.24.2')?.state).toBe('Down');
+    expect(res.nodes['as2']?.rib.some((r) => r.prefix === '198.51.100.0')).toBe(false);
+  });
+
+  it('enforces ISO/IEC 10589 & RFC 1195 IS-IS standards (Area ID mismatch, L1 vs L2 mismatch, ATT default route, L1>L2 preference)', () => {
+    const topo: TopologyState = {
+      nodes: [
+        {
+          id: 'i1',
+          hostname: 'IS-L1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'i1-g0', name: 'Gi0/0', cidr: '10.50.12.1/30', vrf: 'default', isisLevel: 'L1', isisMetric: 10 },
+            { id: 'i1-g1', name: 'Gi0/1', cidr: '10.50.13.1/30', vrf: 'default', isisLevel: 'L1', isisMetric: 10 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          isis: { enabled: true, net: '49.0001.0000.0000.0001.00', level: 'L1', networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'i2',
+          hostname: 'IS-L1L2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'i2-g0', name: 'Gi0/0', cidr: '10.50.12.2/30', vrf: 'default', isisLevel: 'L1', isisMetric: 10 },
+            { id: 'i2-lo', name: 'Lo0', cidr: '10.200.0.1/32', vrf: 'default', isisLevel: 'L2' },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          isis: { enabled: true, net: '49.0001.0000.0000.0002.00', level: 'L1-L2', networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'i3',
+          hostname: 'IS-BADAREA',
+          vendor: 'cisco-ios-xe',
+          routerId: '3.3.3.3',
+          position: { x: 100, y: 100 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [
+            { id: 'i3-g0', name: 'Gi0/0', cidr: '10.50.13.2/30', vrf: 'default', isisLevel: 'L1', isisMetric: 10 },
+          ],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          isis: { enabled: true, net: '49.0002.0000.0000.0003.00', level: 'L1', networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l-i12', sourceNodeId: 'i1', sourceInterfaceId: 'i1-g0', targetNodeId: 'i2', targetInterfaceId: 'i2-g0' },
+        { id: 'l-i13', sourceNodeId: 'i1', sourceInterfaceId: 'i1-g1', targetNodeId: 'i3', targetInterfaceId: 'i3-g0' },
+      ],
+    };
+
+    const res = solveTopology(topo);
+    const i1Nbrs = res.nodes['i1']?.neighbors?.filter((n) => n.protocol === 'isis') ?? [];
+    expect(i1Nbrs.find((n) => n.neighborId === 'IS-L1L2')?.state).toBe('Up');
+    expect(i1Nbrs.find((n) => n.neighborId === 'IS-BADAREA')?.state).toBe('Down');
+    // ATT bit default route installed on L1-only router toward L1-L2 router
+    expect(res.nodes['i1']?.rib.some((r) => r.prefix === '0.0.0.0' && r.prefixLen === 0 && r.protocol === 'isis' && r.active)).toBe(true);
+  });
+
+  it('enforces RFC 9300 & RFC 9301 LISP standards (IID isolation, priority 255 exclusion, MS/MR reachability, role semantics)', () => {
+    const topo: TopologyState = {
+      nodes: [
+        {
+          id: 'xtr1',
+          hostname: 'XTR1',
+          vendor: 'cisco-ios-xe',
+          routerId: '1.1.1.1',
+          position: { x: 0, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'x1-g0', name: 'Gi0/0', cidr: '10.60.0.1/24', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          lisp: {
+            enabled: true,
+            role: 'xtr',
+            rlocIp: '10.60.0.1',
+            mapServerIp: '10.60.0.100',
+            instanceId: 100,
+            eidPrefixes: [{ id: 'e1', prefix: '172.16.1.0/24', priority: 1, weight: 100 }],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'msmr',
+          hostname: 'MSMR',
+          vendor: 'cisco-ios-xe',
+          routerId: '10.60.0.100',
+          position: { x: 50, y: -50 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'ms-g0', name: 'Gi0/0', cidr: '10.60.0.100/24', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          lisp: { enabled: true, role: 'ms-mr', rlocIp: '10.60.0.100', eidPrefixes: [] },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+        {
+          id: 'xtr2',
+          hostname: 'XTR2',
+          vendor: 'cisco-ios-xe',
+          routerId: '2.2.2.2',
+          position: { x: 100, y: 0 },
+          maxPaths: 2,
+          vrfs: ['default'],
+          adOverrides: {},
+          interfaces: [{ id: 'x2-g0', name: 'Gi0/0', cidr: '10.60.0.2/24', vrf: 'default' }],
+          staticRoutes: [],
+          ospf: { enabled: false, networks: [] },
+          bgp: { enabled: false, asn: 65000, peers: [], networks: [] },
+          lisp: {
+            enabled: true,
+            role: 'xtr',
+            rlocIp: '10.60.0.2',
+            mapServerIp: '10.60.0.100',
+            instanceId: 100,
+            eidPrefixes: [
+              { id: 'e2-ok', prefix: '172.16.2.0/24', instanceId: 100, priority: 1, weight: 100 },
+              { id: 'e2-p255', prefix: '172.16.255.0/24', instanceId: 100, priority: 255, weight: 100 },
+              { id: 'e2-iid200', prefix: '172.16.200.0/24', instanceId: 200, priority: 1, weight: 100 },
+            ],
+          },
+          redistributions: [],
+          prefixLists: [],
+          routeMaps: [],
+          vrfLeaks: [],
+        },
+      ],
+      links: [
+        { id: 'l-x1ms', sourceNodeId: 'xtr1', sourceInterfaceId: 'x1-g0', targetNodeId: 'msmr', targetInterfaceId: 'ms-g0' },
+        { id: 'l-msx2', sourceNodeId: 'msmr', sourceInterfaceId: 'ms-g0', targetNodeId: 'xtr2', targetInterfaceId: 'x2-g0' },
+      ],
+    };
+
+    const res = solveTopology(topo);
+    const x1Rib = res.nodes['xtr1']?.rib ?? [];
+    expect(x1Rib.some((r) => r.prefix === '172.16.2.0' && r.protocol === 'lisp' && r.active)).toBe(true);
+    expect(x1Rib.some((r) => r.prefix === '172.16.255.0' && r.protocol === 'lisp')).toBe(false);
+    expect(x1Rib.some((r) => r.prefix === '172.16.200.0' && r.protocol === 'lisp')).toBe(false);
+  });
 });
