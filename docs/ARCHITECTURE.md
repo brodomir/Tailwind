@@ -9,7 +9,7 @@ src/
 │   ├── TopBar.tsx              # Presets, workspaces (new/save-copy/rename/delete), trace bar, Path Tests drawer, import/export
 │   ├── TopologyCanvas.tsx      # React Flow canvas, floating handles, directional outbound/return packet animations, Path Audit bar
 │   ├── InspectorPanel.tsx      # Vendor-gated device, interface, static/PBR, protocol, VRF, policy, ACL/NAT, and link editors
-│   └── CliOutputPanel.tsx      # Vendor CLI show-output, RIB, diff, neighbor, running-config, and JSON viewer
+│   └── CliOutputPanel.tsx      # Vendor CLI show-output, RIB, diff, neighbor, editable running-config + live validation, and JSON viewer
 ├── data/
 │   └── presets.ts              # Built-in preset topologies and verification pathTests
 ├── engine/
@@ -21,7 +21,7 @@ src/
 │   ├── radixTrie.ts            # IPv4 & IPv6 longest-prefix-match (LPM) tries
 │   ├── vendorProfiles.ts       # VENDOR_METADATA, VENDOR_DEFAULT_AD, VENDOR_CAPABILITIES
 │   ├── formatters.ts           # Vendor CLI outputs (show ip route, etc.) and running-config generators
-│   ├── importer.ts             # Multi-vendor CLI / YAML / JSON config parser
+│   ├── importer.ts             # Multi-vendor CLI / YAML / JSON config parser and live running-config validator (validateRunningConfig)
 │   ├── diff.ts                 # Snapshot RIB diff computation
 │   ├── exportBundle.ts         # Automation .zip bundle builder
 │   └── __tests__/              # Vitest test suites

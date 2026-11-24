@@ -7,6 +7,8 @@ RUN npm ci
 
 COPY index.html tsconfig.json vite.config.ts ./
 COPY src ./src
+ARG APP_VERSION=""
+ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build
 
 # Stage 2: Serve static bundle with Nginx

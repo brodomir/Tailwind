@@ -479,7 +479,17 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               dataIndex: 'state',
               width: 105,
               render: (s: NeighborStatus['state']) => (
-                <Tag color={s === 'Down' ? 'red' : s === 'Standby' ? 'gold' : 'green'}>
+                <Tag
+                  color={
+                    s === 'Down'
+                      ? 'red'
+                      : s === 'ExStart'
+                        ? 'orange'
+                        : s === 'Standby' || s === '2-Way'
+                          ? 'gold'
+                          : 'green'
+                  }
+                >
                   {s}
                 </Tag>
               ),

@@ -153,14 +153,14 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </div>
           </div>
 
-          <Card size="small" title={`AD Overrides (${VENDOR_METADATA[node.vendor].shortLabel} defaults)`}>
+          <Card size="small" title={`AD Overrides (${(VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).shortLabel} defaults)`}>
             <div className="grid grid-cols-3 gap-2">
               {caps.adProtocols.map((proto) => (
                   <div key={proto} className="flex items-center justify-between gap-1">
                     <span className="text-[11px] uppercase text-slate-400">{proto}</span>
                     <InputNumber
                       size="small"
-                      placeholder={String(VENDOR_DEFAULT_AD[node.vendor][proto])}
+                      placeholder={String((VENDOR_DEFAULT_AD[node.vendor] ?? VENDOR_DEFAULT_AD['cisco-ios-xe'])[proto])}
                       value={node.adOverrides[proto] ?? null}
                       onChange={(val) => {
                         const nextOverrides = { ...node.adOverrides };
@@ -787,7 +787,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             onClick={() =>
               addInterface(node.id, {
                 id: `if-${Date.now()}`,
-                name: `${VENDOR_METADATA[node.vendor].defaultInterfacePrefix}${node.interfaces.length + 1}`,
+                name: `${(VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).defaultInterfacePrefix}${node.interfaces.length + 1}`,
                 cidr: `10.100.${node.interfaces.length + 1}.1/24`,
                 vrf: 'default',
               })

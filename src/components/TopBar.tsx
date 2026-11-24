@@ -431,13 +431,21 @@ export const TopBar: React.FC = () => {
         {/* Primary Navigation & Workspace Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`mr-1 text-[20px] font-bold leading-none tracking-[-0.03em] ${isLight ? 'text-[#1c1c1e]' : 'text-[#f5f5f7]'
-                }`}
-              style={{ fontFamily: "'Plus Jakarta Sans', 'SF Pro Display', 'Inter', sans-serif" }}
-            >
-              Tailwind
-            </span>
+            <div className="mr-1 flex flex-col items-start leading-none">
+              <span
+                className={`text-[19px] font-bold leading-none tracking-[-0.03em] ${isLight ? 'text-[#1c1c1e]' : 'text-[#f5f5f7]'
+                  }`}
+                style={{ fontFamily: "'Plus Jakarta Sans', 'SF Pro Display', 'Inter', sans-serif" }}
+              >
+                Tailwind
+              </span>
+              <span
+                className={`mt-0.5 font-mono text-[9px] leading-none tracking-tight ${isLight ? 'text-black/45' : 'text-white/45'
+                  }`}
+              >
+                {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'}
+              </span>
+            </div>
 
             <span className={dividerClass} />
 

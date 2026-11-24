@@ -300,5 +300,14 @@ router bgp 65100
     expect(fullNode.bgp.peers[0]?.weight).toBe(250);
     expect(fullNode.redistributions.some((r) => r.from === 'static' && r.to === 'ospf' && r.metricType === 'E1')).toBe(true);
     expect(fullNode.redistributions.some((r) => r.from === 'connected' && r.to === 'eigrp' && r.metric === 1500)).toBe(true);
+
+    // Sweep EVERY node across EVERY preset topology: formatRunningConfig must produce zero validation errors
+    for (const preset of PRESET_TOPOLOGIES) {
+      for (const n of preset.topology.nodes) {
+        const genCfg = formatRunningConfig(n);
+        const genIssues = validateRunningConfig(genCfg).filter((i) => i.severity === 'error');
+        expect(genIssues, `${preset.id}/${n.hostname} config validation errors`).toEqual([]);
+      }
+    }
   });
 });

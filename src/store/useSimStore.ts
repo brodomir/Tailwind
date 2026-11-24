@@ -41,9 +41,13 @@ function applyHtmlThemeClass(mode: ThemeMode) {
 
 function loadInitialThemeMode(): ThemeMode {
   let mode: ThemeMode = 'dark';
-  if (typeof localStorage !== 'undefined') {
-    const saved = localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === 'light' || saved === 'dark') mode = saved;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved === 'light' || saved === 'dark') mode = saved;
+    }
+  } catch {
+    // Ignore storage access errors in restricted/sandboxed browser contexts
   }
   applyHtmlThemeClass(mode);
   return mode;
@@ -77,8 +81,11 @@ function normalizeTopology(t: TopologyState): TopologyState {
     nodes: (Array.isArray(t.nodes) ? t.nodes : []).map((n, idx) => ({
       ...n,
       vendor: n.vendor && VENDOR_METADATA[n.vendor] ? n.vendor : 'cisco-ios-xe',
-      vrfs: n.vrfs?.length ? n.vrfs : ['default'],
+      vrfs: Array.from(new Set(['default', ...(Array.isArray(n.vrfs) ? n.vrfs : [])])),
       adOverrides: n.adOverrides ?? {},
+      sdwanSla: n.sdwanSla
+        ? { ...n.sdwanSla, rules: Array.isArray(n.sdwanSla.rules) ? n.sdwanSla.rules : [] }
+        : undefined,
       interfaces: Array.isArray(n.interfaces) ? n.interfaces : [],
       staticRoutes: Array.isArray(n.staticRoutes) ? n.staticRoutes : [],
       ospf: n.ospf
@@ -130,10 +137,15 @@ let workerReqId = 0;
 function getWorker(): Worker | null {
   if (typeof Worker === 'undefined') return null;
   if (!workerInstance) {
-    workerInstance = new Worker(
-      new URL('../workers/simWorker.ts', import.meta.url),
-      { type: 'module' }
-    );
+    try {
+      workerInstance = new Worker(
+        new URL('../workers/simWorker.ts', import.meta.url),
+        { type: 'module' }
+      );
+    } catch {
+      workerInstance = null;
+      return null;
+    }
   }
   return workerInstance;
 }
@@ -262,13 +274,29 @@ export const useSimStore = create<SimStore>((set, get) => {
       applySolvedResult(get().topology, event.data.result);
     };
     worker.onerror = () => {
+      workerInstance = null;
+      if (reqId !== workerReqId) return;
       try {
         applySolvedResult(get().topology, solveTopology(get().topology));
       } catch {
         // Keep current state if fallback solve also fails
       }
     };
-    worker.postMessage({ id: reqId, topology });
+    worker.onmessageerror = () => {
+      workerInstance = null;
+      if (reqId !== workerReqId) return;
+      try {
+        applySolvedResult(get().topology, solveTopology(get().topology));
+      } catch {
+        // Keep current state if fallback solve also fails
+      }
+    };
+    try {
+      worker.postMessage({ id: reqId, topology });
+    } catch {
+      workerInstance = null;
+      applySolvedResult(topology, solveTopology(topology));
+    }
   };
 
   return {
@@ -357,6 +385,8 @@ export const useSimStore = create<SimStore>((set, get) => {
         baselineSimResult: null,
         selectedNodeId: topology.nodes[0]?.id ?? null,
         traceSrcNodeId: topology.nodes[0]?.id ?? '',
+        traceSrcInterfaceId: undefined,
+        traceSrcIp: undefined,
         traceVrf: 'default',
         traceResult: null,
         pathTests: structuredClone(preset.pathTests ?? []),
@@ -367,13 +397,15 @@ export const useSimStore = create<SimStore>((set, get) => {
     },
 
     importTopology: (rawTopology) => {
-      const topology = normalizeTopology(rawTopology);
+      const topology = normalizeTopology(structuredClone(rawTopology));
       set({
         topology,
         activePresetId: 'custom-import',
         baselineSimResult: null,
         selectedNodeId: topology.nodes[0]?.id ?? null,
         traceSrcNodeId: topology.nodes[0]?.id ?? '',
+        traceSrcInterfaceId: undefined,
+        traceSrcIp: undefined,
         traceVrf: 'default',
         traceResult: null,
         pathTests: [],
@@ -772,6 +804,8 @@ export const useSimStore = create<SimStore>((set, get) => {
         baselineSimResult: null,
         selectedNodeId: topology.nodes[0]?.id ?? null,
         traceSrcNodeId: topology.nodes[0]?.id ?? '',
+        traceSrcInterfaceId: undefined,
+        traceSrcIp: undefined,
         traceVrf: 'default',
         traceResult: null,
         pathTests: structuredClone(ws.pathTests ?? []),
@@ -855,7 +889,11 @@ export const useSimStore = create<SimStore>((set, get) => {
       const compressed = compressToEncodedURIComponent(JSON.stringify(topology));
       const url = new URL(window.location.href);
       url.hash = `s=${compressed}`;
-      window.history.replaceState(null, '', url.toString());
+      try {
+        window.history.replaceState(null, '', url.toString());
+      } catch {
+        // Ignore history restrictions in sandboxed iframes
+      }
       return url.toString();
     },
 
@@ -950,8 +988,9 @@ export const useSimStore = create<SimStore>((set, get) => {
     },
 
     deleteNode: (nodeId) => {
-      const { topology, selectedNodeId, past } = get();
+      const { topology, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId, past } = get();
       const next: TopologyState = {
+        ...topology,
         nodes: topology.nodes.filter((n) => n.id !== nodeId),
         links: topology.links.filter(
           (l) => l.sourceNodeId !== nodeId && l.targetNodeId !== nodeId
@@ -960,6 +999,8 @@ export const useSimStore = create<SimStore>((set, get) => {
       set({
         topology: next,
         selectedNodeId: selectedNodeId === nodeId ? (next.nodes[0]?.id ?? null) : selectedNodeId,
+        traceSrcNodeId: traceSrcNodeId === nodeId ? (next.nodes[0]?.id ?? '') : traceSrcNodeId,
+        traceSrcInterfaceId: traceSrcNodeId === nodeId ? undefined : traceSrcInterfaceId,
         past: [...past, structuredClone(topology)].slice(-30),
         future: [],
       });
@@ -998,8 +1039,9 @@ export const useSimStore = create<SimStore>((set, get) => {
     },
 
     deleteInterface: (nodeId, ifaceId) => {
-      const { topology, past } = get();
+      const { topology, traceSrcInterfaceId, past } = get();
       const next: TopologyState = {
+        ...topology,
         nodes: topology.nodes.map((n) =>
           n.id === nodeId
             ? { ...n, interfaces: n.interfaces.filter((i) => i.id !== ifaceId) }
@@ -1011,7 +1053,12 @@ export const useSimStore = create<SimStore>((set, get) => {
             !(l.targetNodeId === nodeId && l.targetInterfaceId === ifaceId)
         ),
       };
-      set({ topology: next, past: [...past, structuredClone(topology)].slice(-30), future: [] });
+      set({
+        topology: next,
+        traceSrcInterfaceId: traceSrcInterfaceId === ifaceId ? undefined : traceSrcInterfaceId,
+        past: [...past, structuredClone(topology)].slice(-30),
+        future: [],
+      });
       triggerSolve(next);
     },
 
