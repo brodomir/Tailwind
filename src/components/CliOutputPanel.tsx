@@ -131,6 +131,14 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     setConfigError(null);
   }, [selectedNodeId, formattedConfig]);
 
+  const secondaryText = node && result ? formatSecondaryCli(node, result) : '';
+  const effectiveActiveKey =
+    activeKey === 'secondary' && !secondaryText ? 'primary' : activeKey;
+  const configIssues = useMemo(
+    () => (node && result && effectiveActiveKey === 'config' ? validateRunningConfig(draftConfig) : []),
+    [node, result, effectiveActiveKey, draftConfig]
+  );
+
   if (!node || !result) {
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -141,14 +149,7 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
 
   const meta = VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe'];
   const primaryText = formatPrimaryCli(node, result);
-  const secondaryText = formatSecondaryCli(node, result);
-  const effectiveActiveKey =
-    activeKey === 'secondary' && !secondaryText ? 'primary' : activeKey;
   const runningConfigText = configDirty ? draftConfig : formattedConfig;
-  const configIssues = useMemo(
-    () => (effectiveActiveKey === 'config' ? validateRunningConfig(draftConfig) : []),
-    [effectiveActiveKey, draftConfig]
-  );
   const configErrors = configIssues.filter((i) => i.severity === 'error');
   const configWarnings = configIssues.filter((i) => i.severity === 'warning');
   const jsonText = JSON.stringify(result, null, 2);
