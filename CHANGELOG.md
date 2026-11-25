@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [v0.2.0-beta.7] - 2026-11-25
+
+### Changed
+- **Node.js 24 LTS & CI/Docker Upgrade**:
+  - Upgraded `Dockerfile` to `node:24-alpine` and `.github/workflows/ci-release.yml` to `actions/checkout@v5`, `actions/setup-node@v5`, and `node-version: 24`.
+  - Updated `README.md` and `docs/ARCHITECTURE.md` to reflect all **22 Vendor & Cloud Profiles**, Node.js 24+, and the expanded **109-test** suite.
+
+### Fixed
+- **Control-Plane Solver & Packet Tracer (`solver.ts`)**:
+  - **OSPF / OSPFv3**: Propagated IPv6 `adj.remoteIp6` next-hops on dual-stack links; enabled ECMP & lower-cost ABR election for Stub / Totally-Stubby / NSSA default routes (`0.0.0.0/0`); computed `remoteIsAbr` on the advertising router to prevent non-ABR inter-area leaking.
+  - **BGP**: Evaluated `aggregate-address` inside the convergence loop so BGP-learned routes originate aggregates instead of being blackholed by `summaryOnly`; fixed RFC 4456 Route Reflector client reflection, default Router-ID Cluster-ID loop prevention, and reflected `NEXT_HOP` preservation; added RFC 5065 `confedAsPath` loop prevention; added IPv6 numeric peer-IP tie-breaking (`ip6ToBigInt`), AF isolation, and `::/0` `defaultOriginate`; fixed BGP redistribution route-map `matchTag` & community actions; evaluated outbound eBGP route-maps pre-prepend (`^$`) and blocked `setLocalPref` leaks across eBGP.
+  - **EIGRP / IS-IS / RIP / Static**: Sorted internal EIGRP routes ahead of external routes (`AD 90` vs `AD 170`); filtered IPv6 routes out of EIGRP/RIP redistribution and generated per-VRF EIGRP summary `Null0` routes for connected subnets; fixed IS-IS ECMP keying, L1→L2 prefix promotion, and IPv6 link guards; added `leakedFromVrf: 'default'` for non-default VRF static `globalNextHop` and OMP/LISP/EVPN overlay routes; added IPv6 `cidr6` support to L2 switch bridging.
+  - **Data Plane & Security**: Moved loop detection after DNAT/NAT64 (keyed by `nodeId|vrf|dstIp`) to allow legitimate hairpins; filtered `blackhole`/`Null0` routes out of loose uRPF (RFC 3704); added recursive next-hop resolution for FlowSpec `redirect`; allowed PBR `blackhole`/`Null0` next-hops; prevented SD-WAN SLA steering from overriding PBR/FlowSpec redirects and added IPv6 SLA support; added MPLS L3VPN encapsulation and non-default VRF restoration on overlay decapsulation; preserved path latency/jitter/loss/MTU/IPFIX on cloud gateway delivery; used ephemeral client ports (`49152`) on return-path traces and added two-way IPsec underlay reachability warnings.
+- **Standards, Diff, Vendor Profiles & Presets (`standards.ts`, `diff.ts`, `vendorProfiles.ts`, `presets.ts`)**:
+  - Filtered `adminDown` nodes and `shutdown` interfaces from STP; replaced lexicographic `localeCompare` with numeric priority & IPv4 Router-ID tie-breakers in STP and EVPN DF; added IPv6 `parseCidr6` support for SRv6 PHP; added LPM sorting and `adminDown` guard for RSVP-TE LFIB; scoped multicast RPF lookups by VRF; guarded FlowSpec on `bgp.enabled` and EVPN DF on `evpn.enabled !== false`.
+  - Expanded RIB diff fingerprinting (`diff.ts`) to capture BGP attributes, IS-IS level, tag, TLOC, EVPN VNI, and cloud next-hop changes.
+  - Exposed `'lisp'` in `adProtocols` for `cisco-ios-xe` and `cisco-nx-os`.
+  - Fixed `global-multinational` `tlocExtension` placement on `uk-sdwan1` (converging `uk-sdwan2` OMP routes) and `full-showcase` HSRP `shf-2` out-of-subnet VIP.
+- **Importers, Firewall Rules & Formatters (`importer.ts`, `firewallImporter.ts`, `formatters.ts`)**:
+  - Added Arista EOS `mlag configuration` & `mlag <id>` round-trip, L2 interface retention, and `arista-eos` vendor detection.
+  - Added Cisco/FRR `ip prefix-list`, route-map (`match ip address prefix-list`, `set metric`, `set as-path prepend`, `set distance`, multi-community `set community`), `ptp mode`, and static route `track`/`tag` parsing; deferred `neighbor ... route-map` resolution and VRF-scoped `add-path`/`disable-connected-check`; fixed `validateRunningConfig` false positive on `ip flow-export destination`.
+  - Fixed JunOS subinterface (`ge-0/0/0.100`) formatting/import, `.unit` IPv6 shorthand, OSPF/IS-IS/RIP ordering, and `formatJunosFibCli` alignment; fixed FortiGate nested `config` blocks, `passive-interface` ordering, and static `distance`; fixed PAN-OS named `peer-as` & BGP `router-id`; fixed VyOS alphabetical `nexthop-self`, interface ordering, and IS-IS/RIP detection; fixed Check Point & MikroTik ordering/quoted interfaces; preserved GCP `vpn-tunnel` `interfaceName`, stopped per-route `priority` from overwriting `defaultRoutePriority`, and preserved Azure `blackholeCidrs` on round-trip.
+  - Fixed quoted space-containing names in PAN-OS/FortiGate/Check Point ACLs, trailing FortiGate policy flush, Cisco standard ACLs/source ports/sequence numbers, two-pass JunOS address-book resolution, VyOS `tcp_udp` & rule-number `seq`, multi-line MikroTik `/ip firewall filter`, and AWS `from_port = 0` / egress `dstCidr` / single-line GCP `allow`/`deny` blocks.
+- **Store, Canvas & Inspector UI (`useSimStore.ts`, `TopologyCanvas.tsx`, `InspectorPanel.tsx`, `CliOutputPanel.tsx`, `TopBar.tsx`)**:
+  - Remapped internal `interfaceId` references in `duplicateNode`, `hydrateMatchingNodes`, and `applyParsedNodeConfig`; stripped dangling interface IDs in `deleteInterface`; normalized `Loopback` → `Lo` in `hydrateMatchingNodes`; preserved `traceSrcIp` in `setTraceParams`; terminated failed `Worker` instances before respawning.
+  - Fixed canvas node and edge selection + `Delete`/`Backspace` deletion (with 18px invisible hit-target on `SubnetEdge`).
+  - Fixed InspectorPanel Track Objects ID collisions, BGP Network Delete button alignment, Links tab deleted-interface guard, EIGRP `K:` input snap-back, and upgraded SD-WAN `Preferred Members`, BGP `Confed Peers`, and BGP `Communities` to `<Select mode="tags" />`.
+  - Fixed `CliOutputPanel` running-config draft sync on save and `TopBar` multi-file import toast reporting `0 file(s)`.
+
+---
+
 ## [v0.2.0-beta.6] - 2026-11-25
 
 ### Added

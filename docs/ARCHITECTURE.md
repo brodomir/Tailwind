@@ -21,7 +21,8 @@ src/
 │   ├── radixTrie.ts            # IPv4 & IPv6 longest-prefix-match (LPM) tries
 │   ├── vendorProfiles.ts       # VENDOR_METADATA, VENDOR_DEFAULT_AD, VENDOR_CAPABILITIES
 │   ├── formatters.ts           # Vendor CLI outputs (show ip route, etc.) and running-config generators
-│   ├── importer.ts             # Multi-vendor CLI / YAML / JSON config parser and live running-config validator (validateRunningConfig)
+│   ├── importer.ts             # Multi-vendor CLI / Terraform HCL / YAML / JSON config parser and live running-config validator (validateRunningConfig)
+│   ├── firewallImporter.ts     # Multi-vendor & cloud firewall/ACL rule importer (PAN-OS, FortiGate, Check Point, Cisco, Junos, VyOS, MikroTik, AWS/Azure/GCP)
 │   ├── diff.ts                 # Snapshot RIB diff computation
 │   ├── exportBundle.ts         # Automation .zip bundle builder
 │   └── __tests__/              # Vitest test suites
@@ -60,7 +61,7 @@ src/
 
 - **Ingress Checks**: Pre-routing DNAT, NAT64, and RFC 3704 uRPF (strict/loose).
 - **Forwarding Lookup**: IPv4/IPv6 LPM via `BinaryRadixTrie` / `BinaryRadixTrie6`, followed by PBR/PBF/FBF, FlowSpec, and SD-WAN SLA steering.
-- **Security & Encapsulation**: Zone-aware ACL evaluation, post-routing SNAT, and overlay encapsulation/decapsulation (LISP, VXLAN EVPN, OMP, GRE, IPsec, MACsec).
+- **Security & Encapsulation**: Zone-aware ACL evaluation, post-routing SNAT, and overlay encapsulation/decapsulation (MPLS L3VPN, LISP, VXLAN EVPN, OMP, GRE, IPsec, MACsec) with non-default VRF restoration.
 - **MPLS / DIA Cloud Handling**: `mpls-cloud` and `internet-cloud` nodes bypass uRPF/FlowSpec/ACL drops and automatically accept & deliver traffic when no more-specific transit route exists in their RIB.
 - **Return Path & Asymmetry**: On delivery, `tracePacket` traces the reverse flow (`returnTrace`) and sets `asymmetricPath: true` if the return node sequence differs from the forward path. [`TopologyCanvas.tsx`](src/components/TopologyCanvas.tsx) animates outbound hops (`#f59e0b` / VRF color) and return hops (`#06b6d4` cyan) with directional `<animateMotion>` markers.
 
@@ -77,9 +78,10 @@ npm test
 
 The test suites under `src/engine/__tests__/` cover:
 
-- Multi-vendor control-plane convergence, AD overrides, HA/clustering, and packet traces (`solver.test.ts`, `multinational.test.ts`)
+- Multi-vendor control-plane convergence, AD overrides, HA/clustering, and packet traces (`solver.test.ts`, `multinational.test.ts`, `multinationalPaths.test.ts`)
 - Policy engine (`policy.test.ts`), SD-WAN (`sdwan.test.ts`), advanced overlays (`advancedFeatures.test.ts`)
 - Standards, 802.1Q sub-interfaces, LACP/PAgP Port-Channels, MPLS/DIA auto-accept, `cisco-mpls-dmvpn`, and `bgp-ecmp-lab` (`standards.test.ts`)
+- Cross-module bug-hunt regression suite and full 9-preset beta validation (`moduleAudit.test.ts`, `betaValidation.test.ts` — 109 tests total)
 
 ---
 

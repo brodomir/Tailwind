@@ -8,9 +8,9 @@ Tailwind is a browser-based, multi-vendor network routing, switching, security, 
 
 ## Key Features
 
-- **19 Vendor & Cloud Profiles** ([`src/engine/vendorProfiles.ts`](src/engine/vendorProfiles.ts)):
+- **22 Vendor & Cloud Profiles** ([`src/engine/vendorProfiles.ts`](src/engine/vendorProfiles.ts)):
   - **Appliances / Routers / Firewalls**: Cisco IOS-XE, Cisco NX-OS, Cisco IOS-XR, Cisco SD-WAN (Viptela), Palo Alto PAN-OS, Palo Alto Prisma SD-WAN (ION), Forcepoint NGFW (FRR), Arista EOS, HPE Aruba AOS-CX, Juniper Junos, MikroTik RouterOS, Fortinet FortiGate, Check Point Gaia, VyOS.
-  - **Cloud / WAN Abstractions**: MPLS WAN Cloud (`mpls-cloud`), Internet Transit / DIA (`internet-cloud`), AWS Transit Gateway (`aws-cloud`), Azure Virtual WAN (`azure-cloud`), Google Cloud Router (`gcp-cloud`).
+  - **Cloud / WAN Abstractions**: MPLS WAN Cloud (`mpls-cloud`), Internet Transit / DIA (`internet-cloud`), AWS Transit Gateway (`aws-cloud`), AWS Cloud WAN (`aws-cloudwan`), Azure Virtual WAN (`azure-cloud`), Google Cloud Router (`gcp-cloud`), Oracle Cloud DRG (`oci-cloud`), Cloudflare Magic WAN (`cloudflare-mwan`).
   - **Vendor-Gated Capabilities**: Inspector controls, protocol options, LAG modes (LACP / PAgP / Static), FHRP (HSRP / VARP / VRRP), cluster modes (vPC, MLAG, FGCP, PAN-OS HA/HSCI, Forcepoint CVI), and terminology adapt automatically to each vendor.
 - **Control-Plane Protocols & RFC Standards**:
   - **IGPs & Static**: Connected, Static (with IP SLA tracking), **OSPF / OSPFv3 (RFC 2328)** (areas, stub/totally-stubby/NSSA `no-summary`, auth, custom timers, area-type & MTU mismatch checks, priority-0 `2-Way`, virtual links, E2 ASBR internal-cost tie-breaking, sham-links, `passive-interface default` / `no passive-interface`), **EIGRP (RFC 7868)** (DUAL feasible successors, variance, full K1–K5 composite metric, K-value mismatch detection, external AD 170, custom timers), **IS-IS (ISO/IEC 10589 & RFC 1195/5302/5305/5120)** (L1/L2, Area ID & System-ID validation, ATT-bit default route, L1 > L2 preference, overload bit, wide/narrow metrics, L2-to-L1 leaking with Up/Down bit, IPv6 MT), **RIPv1 / RIPv2**.
@@ -32,7 +32,7 @@ Tailwind is a browser-based, multi-vendor network routing, switching, security, 
 
 ### Prerequisites
 
-- Node.js 20+ and npm (for local dev/build) or any modern Chromium/Firefox/Edge/Safari browser (for Docker/static hosting)
+- Node.js 24+ and npm (for local dev/build) or any modern Chromium/Firefox/Edge/Safari browser (for Docker/static hosting)
 
 ### System Requirements & Limits
 
