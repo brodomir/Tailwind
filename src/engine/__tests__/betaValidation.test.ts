@@ -37,9 +37,9 @@ describe('Beta Release 5-Pass Feature Validation', () => {
     }
   }, 20000);
 
-  it('Pass 2: validates VENDOR_METADATA, VENDOR_CAPABILITIES, primary CLI, and running-config formatters for all 19 vendors', () => {
+  it('Pass 2: validates VENDOR_METADATA, VENDOR_CAPABILITIES, primary CLI, and running-config formatters for all 22 vendors', () => {
     const vendors = Object.keys(VENDOR_METADATA) as VendorProfile[];
-    expect(vendors.length).toBe(19);
+    expect(vendors.length).toBe(22);
 
     for (const vendor of vendors) {
       const meta = VENDOR_METADATA[vendor];

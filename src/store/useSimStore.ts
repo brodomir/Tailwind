@@ -193,7 +193,7 @@ interface SimStore {
     vrf?: string,
     proto?: L4Protocol,
     port?: number | null,
-    srcInterfaceId?: string,
+    srcInterfaceId?: string | null,
     srcIp?: string | null
   ) => void;
   runTrace: () => void;
@@ -678,6 +678,7 @@ export const useSimStore = create<SimStore>((set, get) => {
           aclRules: parsedNode.aclRules?.length ? parsedNode.aclRules : existing.aclRules,
           natRules: parsedNode.natRules?.length ? parsedNode.natRules : existing.natRules,
           fhrpGroups: parsedNode.fhrpGroups,
+          cloudConfig: parsedNode.cloudConfig ?? existing.cloudConfig,
         };
       });
 
@@ -737,20 +738,89 @@ export const useSimStore = create<SimStore>((set, get) => {
         byLevel.set(l, arr);
       }
 
-      const posMap = new Map<string, { x: number; y: number }>();
-      for (const [lvl, list] of byLevel.entries()) {
-        list.forEach((n, idx) => {
-          const x = 120 + idx * 280;
-          const y = 80 + lvl * 200;
-          posMap.set(n.id, { x, y });
+      const isCloudNode = (n: NodeConfig) =>
+        n.vendor === 'mpls-cloud' ||
+        n.vendor === 'internet-cloud' ||
+        n.vendor === 'aws-cloud' ||
+        n.vendor === 'aws-cloudwan' ||
+        n.vendor === 'azure-cloud' ||
+        n.vendor === 'gcp-cloud' ||
+        n.vendor === 'oci-cloud' ||
+        n.vendor === 'cloudflare-mwan';
+
+      const nodeSlotWidth = (n: NodeConfig) => (isCloudNode(n) ? 420 : 340);
+      const MAX_PER_ROW = 6;
+      const TIER_GAP_Y = 330;
+      const SUBROW_GAP_Y = 270;
+
+      // Build ordered visual rows (wrapping wide tiers into balanced sub-rows)
+      const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
+      const rows: { nodes: NodeConfig[]; y: number }[] = [];
+      let curY = 60;
+      const placedX = new Map<string, number>();
+
+      for (let li = 0; li < sortedLevels.length; li++) {
+        const lvl = sortedLevels[li];
+        const list = [...(byLevel.get(lvl) ?? [])];
+
+        // Barycenter sort against already-placed neighbors to minimize edge crossings
+        list.sort((a, b) => {
+          const avgX = (node: NodeConfig): number => {
+            const xs = (adj.get(node.id) ?? [])
+              .map((nb) => placedX.get(nb))
+              .filter((v): v is number => v !== undefined);
+            if (xs.length === 0) return Number.MAX_SAFE_INTEGER;
+            return xs.reduce((s, v) => s + v, 0) / xs.length;
+          };
+          const ax = avgX(a);
+          const bx = avgX(b);
+          if (ax !== bx) return ax - bx;
+          return a.hostname.localeCompare(b.hostname);
         });
+
+        const subRowCount = Math.max(1, Math.ceil(list.length / MAX_PER_ROW));
+        const perSubRow = Math.ceil(list.length / subRowCount);
+
+        for (let r = 0; r < subRowCount; r++) {
+          const slice = list.slice(r * perSubRow, (r + 1) * perSubRow);
+          let cursor = 0;
+          for (const n of slice) {
+            const w = nodeSlotWidth(n);
+            placedX.set(n.id, cursor + w / 2);
+            cursor += w;
+          }
+          rows.push({ nodes: slice, y: curY });
+          curY += r < subRowCount - 1 ? SUBROW_GAP_Y : TIER_GAP_Y;
+        }
       }
+
+      // Compute row widths and center every row around the widest row
+      const rowWidths = rows.map((row) =>
+        row.nodes.reduce((sum, n) => sum + nodeSlotWidth(n), 0)
+      );
+      const maxRowWidth = Math.max(800, ...rowWidths);
+
+      const posMap = new Map<string, { x: number; y: number }>();
+      rows.forEach((row, idx) => {
+        const width = rowWidths[idx];
+        let cursor = 80 + Math.round((maxRowWidth - width) / 2);
+        for (const n of row.nodes) {
+          posMap.set(n.id, { x: cursor, y: row.y });
+          cursor += nodeSlotWidth(n);
+        }
+      });
 
       const next: TopologyState = {
         ...topology,
         nodes: topology.nodes.map((n) => ({
           ...n,
           position: posMap.get(n.id) ?? n.position,
+        })),
+        links: topology.links.map((l) => ({
+          ...l,
+          sourceHandle: undefined,
+          targetHandle: undefined,
+          controlPointOffset: undefined,
         })),
       };
       set({
@@ -779,8 +849,9 @@ export const useSimStore = create<SimStore>((set, get) => {
         baselineSimResult: null,
         selectedNodeId: null,
         viewportCenter: null,
-        setViewportCenter: (center) => set({ viewportCenter: center }),
         traceSrcNodeId: '',
+        traceSrcInterfaceId: undefined,
+        traceSrcIp: undefined,
         traceVrf: 'default',
         traceResult: null,
         pathTests: [],
@@ -865,7 +936,13 @@ export const useSimStore = create<SimStore>((set, get) => {
       set((state) => ({
         traceSrcNodeId: srcNodeId,
         traceSrcInterfaceId:
-          srcNodeId !== state.traceSrcNodeId ? srcInterfaceId : (srcInterfaceId ?? state.traceSrcInterfaceId),
+          srcInterfaceId === null
+            ? undefined
+            : srcInterfaceId !== undefined
+              ? srcInterfaceId
+              : srcNodeId !== state.traceSrcNodeId
+                ? undefined
+                : state.traceSrcInterfaceId,
         traceSrcIp: srcIp === null ? undefined : srcIp !== undefined ? srcIp : undefined,
         traceDstIp: dstIp,
         traceVrf: vrf ?? state.traceVrf,
@@ -936,6 +1013,7 @@ export const useSimStore = create<SimStore>((set, get) => {
             y: Math.round(viewportCenter.y - 45 + stagger),
           }
         : { x: 260 + (idx % 4) * 60, y: 120 + (idx % 3) * 60 };
+      const isCloud = meta.category === 'cloud';
       const newNode: NodeConfig = {
         id,
         hostname: `${meta.shortLabel.toUpperCase().replace(/[^A-Z0-9]/g, '')}-${idx}`,
@@ -951,13 +1029,12 @@ export const useSimStore = create<SimStore>((set, get) => {
             name: `${meta.defaultInterfacePrefix}1`,
             cidr: `10.200.${idx}.1/30`,
             vrf: 'default',
-            ospfArea: 0,
-            ospfCost: 10,
+            ...(isCloud ? {} : { ospfArea: 0, ospfCost: 10 }),
           },
         ],
         staticRoutes: [],
-        ospf: { enabled: true, networks: [] },
-        bgp: { enabled: false, asn: 65000 + idx, peers: [], networks: [] },
+        ospf: { enabled: !isCloud, networks: [] },
+        bgp: { enabled: isCloud, asn: 65000 + idx, peers: [], networks: [] },
         redistributions: [],
         prefixLists: [],
         routeMaps: [],
@@ -1015,7 +1092,8 @@ export const useSimStore = create<SimStore>((set, get) => {
     },
 
     deleteNode: (nodeId) => {
-      const { topology, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId, past } = get();
+      const { topology, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId, traceSrcIp, traceVrf, past } = get();
+      if (!topology.nodes.some((n) => n.id === nodeId)) return;
       const next: TopologyState = {
         ...topology,
         nodes: topology.nodes.filter((n) => n.id !== nodeId),
@@ -1028,6 +1106,8 @@ export const useSimStore = create<SimStore>((set, get) => {
         selectedNodeId: selectedNodeId === nodeId ? (next.nodes[0]?.id ?? null) : selectedNodeId,
         traceSrcNodeId: traceSrcNodeId === nodeId ? (next.nodes[0]?.id ?? '') : traceSrcNodeId,
         traceSrcInterfaceId: traceSrcNodeId === nodeId ? undefined : traceSrcInterfaceId,
+        traceSrcIp: traceSrcNodeId === nodeId ? undefined : traceSrcIp,
+        traceVrf: traceSrcNodeId === nodeId ? 'default' : traceVrf,
         past: [...past, structuredClone(topology)].slice(-30),
         future: [],
       });

@@ -10,6 +10,7 @@ import { ipToUint32, parseCidr, uint32ToIp } from './ipMath';
 import {
   parseCheckpointGaiaAclRules,
   parseCiscoStyleAclRules,
+  parseCloudAclRules,
   parseFortigateAclRules,
   parseJunosAclRules,
   parseMikrotikAclRules,
@@ -18,6 +19,9 @@ import {
 } from './firewallImporter';
 
 let importIdSeq = 0;
+function nextImportId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${++importIdSeq}`;
+}
 
 function maskToPrefixLen(mask: string): number {
   const parts = mask.trim().split('.');
@@ -98,8 +102,33 @@ export function autoFormatRunningConfig(raw: string): string {
   const lines = raw.split(/\r?\n/).map((l) => normalizeConfigLine(l));
   const nonEmpty = lines.map((l) => l.trim()).filter(Boolean);
 
-  // 1. FortiGate (`config ... / edit ... / next / end`)
-  const isForti = nonEmpty.some((l) => /^config\s+(?:system|router)\b/i.test(l));
+  // 1. Terraform HCL (`resource "..." "..." { ... }`)
+  const isHcl = nonEmpty.some((l) => /^resource\s+"[^"]+"\s+"[^"]+"\s*\{/i.test(l));
+  if (isHcl) {
+    const out: string[] = [];
+    let depth = 0;
+    for (const rawLine of lines) {
+      const t = rawLine.trim();
+      if (!t) {
+        if (out.length > 0 && out[out.length - 1] !== '') out.push('');
+        continue;
+      }
+      if (t.startsWith('}')) depth = Math.max(0, depth - 1);
+      out.push(`${'  '.repeat(depth)}${t}`);
+      const codeOnly = t.replace(/#.*$/, '');
+      const opens = (codeOnly.match(/\{/g) || []).length;
+      const closes = (codeOnly.match(/\}/g) || []).length;
+      if (t.startsWith('}')) {
+        depth = Math.max(0, depth + opens - Math.max(0, closes - 1));
+      } else {
+        depth = Math.max(0, depth + opens - closes);
+      }
+    }
+    return out.join('\n').trim();
+  }
+
+  // 2. FortiGate (`config ... / edit ... / next / end`)
+  const isForti = nonEmpty.some((l) => /^config\s+(?:system|router|firewall|vpn)\b/i.test(l));
   if (isForti) {
     const out: string[] = [];
     let depth = 0;
@@ -1797,7 +1826,7 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
     if (/^config\s+router\s+policy$/i.test(t)) { block = 'policy'; nestedUnknownDepth = 0; continue; }
     if (/^config\s+router\s+ospf$/i.test(t)) { block = 'ospf'; ospfEnabled = true; nestedUnknownDepth = 0; continue; }
     if (/^config\s+router\s+rip$/i.test(t)) { block = 'rip'; ripEnabled = true; nestedUnknownDepth = 0; continue; }
-    if (/^config\s+router\s+bgp$/i.test(t)) { block = 'bgp'; nestedUnknownDepth = 0; continue; }
+    if (/^config\s+router\s+bgp$/i.test(t)) { block = 'bgp'; bgpEnabled = true; nestedUnknownDepth = 0; continue; }
     if (/^config\s+neighbor$/i.test(t) && block === 'bgp') { subBlock = 'neighbor'; continue; }
     if (/^config\s+/i.test(t) && block) { nestedUnknownDepth++; continue; }
     const flushFortiEntry = () => {
@@ -2524,6 +2553,392 @@ function parseCheckpointGaiaConfig(lines: string[]): NodeConfig {
   };
 }
 
+function parseCloudConfig(lines: string[]): NodeConfig {
+  const joined = lines.join('\n');
+  let vendor: NodeConfig['vendor'] = 'aws-cloud';
+  if (/azurerm_|^az\s+network\b/im.test(joined)) vendor = 'azure-cloud';
+  else if (/google_compute_|google_network_connectivity_|^gcloud\s+compute\b/im.test(joined)) vendor = 'gcp-cloud';
+  else if (/oci_core_|^oci\s+network\b/im.test(joined)) vendor = 'oci-cloud';
+  else if (/cloudflare_magic_(?:wan|transit)_|^cf-magic-wan\b/im.test(joined)) vendor = 'cloudflare-mwan';
+  else if (/aws_networkmanager_|^aws\s+networkmanager\b/im.test(joined)) vendor = 'aws-cloudwan';
+
+  let hostname =
+    vendor === 'azure-cloud'
+      ? 'AZURE-VHUB'
+      : vendor === 'gcp-cloud'
+        ? 'GCP-ROUTER'
+        : vendor === 'oci-cloud'
+          ? 'OCI-DRG'
+          : vendor === 'cloudflare-mwan'
+            ? 'CF-MWAN'
+            : vendor === 'aws-cloudwan'
+              ? 'AWS-CWAN'
+              : 'AWS-TGW';
+  let region = '';
+  let asn = vendor === 'azure-cloud' ? 65515 : vendor === 'gcp-cloud' ? 64514 : vendor === 'oci-cloud' ? 31898 : vendor === 'cloudflare-mwan' ? 13335 : 64512;
+  let applianceMode = false;
+  let disableBgpPropagation = false;
+  let privateGoogleAccess = false;
+  let pgaOnPremAdvertise = false;
+  let nccHubEnabled = false;
+  const pscEndpoints: string[] = [];
+  let dynamicRoutingMode: 'regional' | 'global' = 'global';
+  let defaultRoutePriority = 1000;
+  const blackholeCidrs: string[] = [];
+  const vrfs = new Set<string>(['default']);
+  const interfaces: InterfaceConfig[] = [];
+  const staticRoutes: StaticRouteConfig[] = [];
+  const bgpPeers: BgpPeerConfig[] = [];
+
+  let blockType = '';
+  let curCidr = '';
+  let curNextHop = '';
+  let curAzureNhType: StaticRouteConfig['azureNextHopType'] | undefined;
+  let curAwsTargetType: StaticRouteConfig['awsTargetType'] | undefined;
+  let curGcpNhType: StaticRouteConfig['gcpNextHopType'] | undefined;
+  let curGcpPriority: number | undefined;
+  let curNetworkTag: string | undefined;
+  let curBlackhole = false;
+  let curVrf = 'default';
+  let curName = '';
+  let braceDepth = 0;
+
+  const normalizeAzureNhType = (rawType?: string): StaticRouteConfig['azureNextHopType'] | undefined => {
+    if (!rawType) return undefined;
+    const t = rawType.toLowerCase();
+    if (t === 'virtualappliance') return 'VirtualAppliance';
+    if (t === 'none') return 'None';
+    if (t === 'internet') return 'Internet';
+    if (t === 'vnetlocal') return 'VnetLocal';
+    if (t === 'virtualnetworkgateway') return 'VirtualNetworkGateway';
+    return undefined;
+  };
+
+  const flushBlock = () => {
+    if (!blockType) return;
+    if (blockType === 'att' && curCidr) {
+      vrfs.add(curVrf);
+      interfaces.push({
+        id: nextImportId('if'),
+        name: curName || `att-${interfaces.length + 1}`,
+        cidr: curCidr,
+        vrf: curVrf,
+      });
+    } else if (blockType === 'route' && curCidr) {
+      if (vendor === 'azure-cloud' && curAzureNhType) {
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: curCidr,
+          nextHop:
+            curAzureNhType === 'None'
+              ? 'blackhole'
+              : curAzureNhType === 'Internet'
+                ? 'internet'
+                : curAzureNhType === 'VnetLocal'
+                  ? '0.0.0.0'
+                  : curNextHop || '0.0.0.0',
+          vrf: curVrf,
+          azureNextHopType: curAzureNhType,
+        });
+      } else if ((vendor === 'aws-cloud' || vendor === 'aws-cloudwan') && curAwsTargetType) {
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: curCidr,
+          nextHop:
+            curAwsTargetType === 'igw'
+              ? 'igw'
+              : curAwsTargetType === 'nat'
+                ? 'nat-gw'
+                : curAwsTargetType === 'blackhole'
+                  ? 'blackhole'
+                  : curNextHop || '0.0.0.0',
+          vrf: curVrf,
+          awsTargetType: curAwsTargetType,
+        });
+      } else if (vendor === 'gcp-cloud' && (curGcpNhType || curNextHop)) {
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: curCidr,
+          nextHop:
+            curGcpNhType === 'default-internet-gateway'
+              ? 'gcp-igw'
+              : curGcpNhType === 'cloud-nat'
+                ? 'gcp-nat'
+                : curNextHop || '0.0.0.0',
+          vrf: curVrf,
+          gcpNextHopType: curGcpNhType ?? 'next-hop-address',
+          ...(curGcpPriority !== undefined ? { gcpPriority: curGcpPriority } : {}),
+          ...(curNetworkTag ? { networkTag: curNetworkTag } : {}),
+        });
+      } else if (curBlackhole || curNextHop.toLowerCase() === 'none' || curNextHop.toLowerCase() === 'blackhole') {
+        blackholeCidrs.push(curCidr);
+      } else if (curNextHop) {
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: curCidr,
+          nextHop: curNextHop,
+          vrf: curVrf,
+        });
+      }
+    }
+    blockType = '';
+    curCidr = '';
+    curNextHop = '';
+    curAzureNhType = undefined;
+    curAwsTargetType = undefined;
+    curGcpNhType = undefined;
+    curGcpPriority = undefined;
+    curNetworkTag = undefined;
+    curBlackhole = false;
+    curVrf = 'default';
+    curName = '';
+    braceDepth = 0;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+    // Single-line CLI: AWS `aws ec2 create-route`
+    if (/^aws\s+ec2\s+create-route\b/i.test(line)) {
+      const pfx = line.match(/--destination-cidr-block\s+"?([^"\s]+)"?/i)?.[1];
+      const igw = line.match(/--gateway-id\s+"?([^"\s]+)"?/i)?.[1];
+      const nat = line.match(/--nat-gateway-id\s+"?([^"\s]+)"?/i)?.[1];
+      const pcx = line.match(/--vpc-peering-connection-id\s+"?([^"\s]+)"?/i)?.[1];
+      const tgw = line.match(/--transit-gateway-id\s+"?([^"\s]+)"?/i)?.[1];
+      if (pfx) {
+        const targetType: StaticRouteConfig['awsTargetType'] = nat
+          ? 'nat'
+          : igw?.startsWith('vgw-')
+            ? 'vgw'
+            : igw
+              ? 'igw'
+              : pcx
+                ? 'pcx'
+                : tgw
+                  ? 'tgw'
+                  : 'igw';
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: pfx,
+          nextHop: targetType === 'nat' ? 'nat-gw' : targetType === 'igw' ? 'igw' : '0.0.0.0',
+          vrf: 'default',
+          awsTargetType: targetType,
+        });
+      }
+      continue;
+    }
+
+    // Single-line CLI: Azure route-table create / update
+    if (/^az\s+network\s+route-table\s+(?:create|update)\b/i.test(line)) {
+      if (/--disable-bgp-route-propagation\s+(?:true|1|yes)/i.test(line)) {
+        disableBgpPropagation = true;
+      }
+      continue;
+    }
+
+    // Single-line CLI: Azure route create
+    if (/^az\s+network\s+route-table\s+route\s+create\b/i.test(line)) {
+      const pfx = line.match(/--address-prefix\s+"?([^"\s]+)"?/i)?.[1];
+      const nhType = normalizeAzureNhType(line.match(/--next-hop-type\s+"?([^"\s]+)"?/i)?.[1]);
+      const nhIp = line.match(/--next-hop-ip-address\s+"?([^"\s]+)"?/i)?.[1];
+      if (pfx) {
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: pfx,
+          nextHop:
+            nhType === 'None'
+              ? 'blackhole'
+              : nhType === 'Internet'
+                ? 'internet'
+                : nhType === 'VnetLocal'
+                  ? '0.0.0.0'
+                  : nhIp || '0.0.0.0',
+          vrf: 'default',
+          azureNextHopType: nhType ?? (nhIp ? 'VirtualAppliance' : 'None'),
+        });
+      }
+      continue;
+    }
+
+    // Single-line CLI: GCP route create
+    if (/^gcloud\s+compute\s+routes\s+create\b/i.test(line)) {
+      const pfx = line.match(/--destination-range[=\s]+"?([^"\s]+)"?/i)?.[1];
+      const nhIp = line.match(/--next-hop-address[=\s]+"?([^"\s]+)"?/i)?.[1];
+      const nhGw = line.match(/--next-hop-gateway[=\s]+"?([^"\s]+)"?/i)?.[1];
+      const nhIlb = line.match(/--next-hop-ilb[=\s]+"?([^"\s]+)"?/i)?.[1];
+      const nhVpn = line.match(/--next-hop-vpn-tunnel[=\s]+"?([^"\s]+)"?/i)?.[1];
+      const tagM = line.match(/--tags[=\s]+"?([^"\s,]+)"?/i)?.[1];
+      const prio = line.match(/--priority[=\s]+(\d+)/i)?.[1];
+      const prioNum = prio ? Number(prio) : undefined;
+      if (prioNum !== undefined) defaultRoutePriority = prioNum;
+      if (pfx) {
+        const gcpType: StaticRouteConfig['gcpNextHopType'] = nhGw
+          ? 'default-internet-gateway'
+          : nhIlb
+            ? 'ilb'
+            : nhVpn
+              ? 'vpn-tunnel'
+              : 'next-hop-address';
+        staticRoutes.push({
+          id: nextImportId('sr'),
+          prefix: pfx,
+          nextHop: nhGw ? 'gcp-igw' : nhIlb || nhIp || '0.0.0.0',
+          vrf: 'default',
+          gcpNextHopType: gcpType,
+          ...(prioNum !== undefined ? { gcpPriority: prioNum } : {}),
+          ...(tagM ? { networkTag: tagM } : {}),
+        });
+      }
+      continue;
+    }
+
+    const resM = line.match(/^resource\s+"([^"]+)"\s+"([^"]+)"\s*\{/);
+    if (resM) {
+      flushBlock();
+      const rType = resM[1].toLowerCase();
+      curName = resM[2];
+      braceDepth = 1;
+      if (
+        rType === 'aws_ec2_transit_gateway' ||
+        rType === 'aws_networkmanager_core_network' ||
+        rType === 'azurerm_virtual_hub' ||
+        rType === 'google_compute_router' ||
+        rType === 'oci_core_drg' ||
+        rType === 'cloudflare_magic_transit_site'
+      ) {
+        blockType = 'hub';
+      } else if (
+        rType === 'azurerm_route_table' ||
+        rType === 'google_network_connectivity_hub' ||
+        rType === 'google_compute_global_forwarding_rule'
+      ) {
+        if (rType === 'google_network_connectivity_hub') nccHubEnabled = true;
+        blockType = rType === 'google_compute_global_forwarding_rule' ? 'psc' : 'subhub';
+      } else if (rType.includes('attachment')) {
+        blockType = 'att';
+      } else if (
+        rType === 'aws_ec2_transit_gateway_route' ||
+        rType === 'aws_route' ||
+        rType === 'azurerm_route' ||
+        rType === 'google_compute_route' ||
+        rType === 'oci_core_drg_route_rule' ||
+        rType === 'cloudflare_magic_wan_static_route'
+      ) {
+        blockType = 'route';
+      } else {
+        blockType = 'other';
+      }
+      continue;
+    }
+
+    if (!blockType) continue;
+    if (line.includes('{')) braceDepth += (line.match(/\{/g) || []).length;
+
+    if (blockType === 'hub' || blockType === 'subhub') {
+      if (blockType === 'hub' && braceDepth === 1) {
+        const nM = line.match(/^(?:name|description|display_name)\s*=\s*"([^"]+)"/i);
+        if (nM) hostname = nM[1];
+      }
+      const regM = line.match(/^(?:region|location)\s*=\s*"([^"]+)"/i);
+      if (regM) region = regM[1];
+      const asnM = line.match(/^(?:amazon_side_asn|virtual_router_asn|asn)\s*=\s*(\d+)/i);
+      if (asnM) asn = Number(asnM[1]);
+      const appM = line.match(/^appliance_mode_support\s*=\s*"(enable|disable)"/i);
+      if (appM) applianceMode = appM[1].toLowerCase() === 'enable';
+      if (/^disable_bgp_route_propagation\s*=\s*true/i.test(line)) disableBgpPropagation = true;
+      const modeM = line.match(/^advertise_mode\s*=\s*"(REGIONAL|GLOBAL)"/i);
+      if (modeM) dynamicRoutingMode = modeM[1].toLowerCase() as 'regional' | 'global';
+      if (/199\.36\.153\.(?:8|4)\/30/.test(line)) {
+        privateGoogleAccess = true;
+        pgaOnPremAdvertise = true;
+      }
+    } else if (blockType === 'psc') {
+      const ipM = line.match(/^ip_address\s*=\s*"([^"]+)"/i);
+      if (ipM) pscEndpoints.push(ipM[1].includes('/') ? ipM[1] : `${ipM[1]}/32`);
+    } else if (blockType === 'att') {
+      const cM = line.match(/^subnet_cidr\s*=\s*"([^"]+)"/i);
+      if (cM) curCidr = cM[1];
+      const rtM = line.match(/^route_table\s*=\s*"([^"]+)"/i);
+      if (rtM) curVrf = rtM[1];
+    } else if (blockType === 'route') {
+      const cM = line.match(/^(?:destination_cidr_block|address_prefix|dest_range|destination|prefix)\s*=\s*"([^"]+)"/i);
+      if (cM) curCidr = cM[1];
+      const nhM = line.match(/^(?:next_hop|next_hop_in_ip_address|next_hop_ip|nexthop)\s*=\s*"([^"]+)"/i);
+      if (nhM) curNextHop = nhM[1];
+      const nhTypeM = line.match(/^next_hop_type\s*=\s*"([^"]+)"/i);
+      if (nhTypeM) {
+        curAzureNhType = normalizeAzureNhType(nhTypeM[1]);
+        if (nhTypeM[1].toLowerCase() === 'none') curBlackhole = true;
+      }
+      if (/^nat_gateway_id\s*=/i.test(line)) curAwsTargetType = 'nat';
+      else if (/^gateway_id\s*=\s*"vgw-/i.test(line)) curAwsTargetType = 'vgw';
+      else if (/^gateway_id\s*=/i.test(line)) curAwsTargetType = 'igw';
+      else if (/^vpc_peering_connection_id\s*=/i.test(line)) curAwsTargetType = 'pcx';
+      else if (/^transit_gateway_id\s*=/i.test(line)) curAwsTargetType = 'tgw';
+      else if (/^vpc_endpoint_id\s*=/i.test(line)) curAwsTargetType = 'vpce';
+      if (/^blackhole\s*=\s*true/i.test(line)) curBlackhole = true;
+      if (/^next_hop_gateway\s*=/i.test(line)) {
+        curGcpNhType = /cloud\s*nat/i.test(line) ? 'cloud-nat' : 'default-internet-gateway';
+      } else if (/^next_hop_ilb\s*=\s*"([^"]+)"/i.test(line)) {
+        curGcpNhType = 'ilb';
+        curNextHop = line.match(/^next_hop_ilb\s*=\s*"([^"]+)"/i)![1];
+      } else if (/^next_hop_vpn_tunnel\s*=/i.test(line)) {
+        curGcpNhType = 'vpn-tunnel';
+      }
+      const prioM = line.match(/^priority\s*=\s*(\d+)/i);
+      if (prioM) {
+        curGcpPriority = Number(prioM[1]);
+        defaultRoutePriority = Number(prioM[1]);
+      }
+      const tagsM = line.match(/^tags\s*=\s*\[\s*"([^"]+)"/i);
+      if (tagsM) curNetworkTag = tagsM[1];
+    }
+
+    if (line.includes('}')) {
+      braceDepth -= (line.match(/\}/g) || []).length;
+      if (braceDepth <= 0) flushBlock();
+    }
+  }
+  flushBlock();
+
+  return {
+    id: nextImportId('node'),
+    hostname,
+    vendor,
+    routerId: '169.254.0.1',
+    position: { x: 180, y: 140 },
+    maxPaths: 4,
+    vrfs: [...vrfs],
+    adOverrides: {},
+    interfaces,
+    staticRoutes,
+    ospf: { enabled: false, networks: [] },
+    bgp: { enabled: true, asn, peers: bgpPeers, networks: [] },
+    redistributions: [],
+    prefixLists: [],
+    routeMaps: [],
+    vrfLeaks: [],
+    cloudConfig: {
+      ...(region ? { region } : {}),
+      ...(vendor === 'gcp-cloud'
+        ? {
+            dynamicRoutingMode,
+            defaultRoutePriority,
+            privateGoogleAccess,
+            pgaOnPremAdvertise,
+            nccHubEnabled,
+            ...(pscEndpoints.length > 0 ? { pscEndpoints } : {}),
+          }
+        : {}),
+      ...(vendor === 'aws-cloud' || vendor === 'aws-cloudwan' ? { applianceMode } : {}),
+      ...(vendor === 'azure-cloud' ? { udrOverridesBgp: true, disableBgpPropagation } : {}),
+      preferPrivateCircuit: true,
+      ...(blackholeCidrs.length > 0 ? { blackholeCidrs } : {}),
+    },
+  };
+}
+
 export function importTopologyFromText(raw: string): TopologyState {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -2554,8 +2969,14 @@ export function importTopologyFromText(raw: string): TopologyState {
   }
 
   const lines = trimmed.split(/\r?\n/).map((l) => normalizeConfigLine(l));
-  const isForti = lines.some((l) => /^config\s+(?:system|router|firewall)\b/i.test(l.trim()));
+  const isCloud = lines.some((l) =>
+    /^(?:resource\s+"(?:aws_|azurerm_|google_compute_|google_network_connectivity_|oci_core_|cloudflare_magic_(?:wan|transit)_)|(?:aws\s+(?:ec2|networkmanager)|az\s+network|gcloud\s+compute|oci\s+network|cf-magic-wan)\b)/i.test(
+      l.trim()
+    )
+  );
+  const isForti = !isCloud && lines.some((l) => /^config\s+(?:system|router|firewall)\b/i.test(l.trim()));
   const isMikrotik =
+    !isCloud &&
     !isForti &&
     lines.some((l) =>
       /^\/(?:ip\s+(?:address|route|vrf|firewall)|ipv6\s+address|system\s+identity|routing\s+(?:ospf|bgp))\b/i.test(
@@ -2563,14 +2984,16 @@ export function importTopologyFromText(raw: string): TopologyState {
       )
     );
   const isVyos =
+    !isCloud &&
     !isForti &&
     !isMikrotik &&
     lines.some((l) =>
-      /^set\s+(?:interfaces\s+ethernet\s+\S+\s+address|firewall\s+|protocols\s+(?:static\s+route|bgp\s+system-as|ospf\s+(?:parameters|interface)))\b/i.test(
+      /^set\s+(?:interfaces\s+(?:ethernet|loopback|dummy|bonding|vlan|tunnel|vti|wireguard)\s+\S+\s+address|firewall\s+(?:ipv4\s+)?(?:name|forward|input|output|zone)\b|protocols\s+(?:static\s+route|bgp\s+system-as|ospf\s+(?:parameters|interface)))\b/i.test(
         l.trim()
       )
     );
   const isGaia =
+    !isCloud &&
     !isForti &&
     !isMikrotik &&
     !isVyos &&
@@ -2580,6 +3003,7 @@ export function importTopologyFromText(raw: string): TopologyState {
       )
     );
   const isJunosSet =
+    !isCloud &&
     !isForti &&
     !isMikrotik &&
     !isVyos &&
@@ -2589,10 +3013,11 @@ export function importTopologyFromText(raw: string): TopologyState {
         l.trim()
       )
     );
-  const isCiscoStyle = lines.some((l) =>
+  const isCiscoStyle = !isCloud && lines.some((l) =>
     /^(?:interface\s+\S+|router\s+(?:ospf|bgp|eigrp|isis|rip)|route-map\s+\S+|ip\s+access-list\s+|access-list\s+\d+)/i.test(l.trim())
   );
   const isPanSet =
+    !isCloud &&
     !isForti &&
     !isMikrotik &&
     !isVyos &&
@@ -2600,32 +3025,36 @@ export function importTopologyFromText(raw: string): TopologyState {
     !isJunosSet &&
     !isCiscoStyle &&
     lines.some((l) => /^set\s+/i.test(l.trim()));
-  const node = isForti
-    ? parseFortigateConfig(lines)
-    : isMikrotik
-      ? parseMikrotikConfig(lines)
-      : isVyos
-        ? parseVyosConfig(lines)
-        : isGaia
-          ? parseCheckpointGaiaConfig(lines)
-          : isJunosSet
-            ? parseJunosSetConfig(lines)
-            : isPanSet
-              ? parsePanOsSetConfig(lines)
-              : parseCiscoStyleConfig(lines);
-  const parsedAclRules = isForti
-    ? parseFortigateAclRules(lines)
-    : isMikrotik
-      ? parseMikrotikAclRules(lines)
-      : isVyos
-        ? parseVyosAclRules(lines)
-        : isGaia
-          ? parseCheckpointGaiaAclRules(lines)
-          : isJunosSet
-            ? parseJunosAclRules(lines)
-            : isPanSet
-              ? parsePanOsAclRules(lines)
-              : parseCiscoStyleAclRules(lines);
+  const node = isCloud
+    ? parseCloudConfig(lines)
+    : isForti
+      ? parseFortigateConfig(lines)
+      : isMikrotik
+        ? parseMikrotikConfig(lines)
+        : isVyos
+          ? parseVyosConfig(lines)
+          : isGaia
+            ? parseCheckpointGaiaConfig(lines)
+            : isJunosSet
+              ? parseJunosSetConfig(lines)
+              : isPanSet
+                ? parsePanOsSetConfig(lines)
+                : parseCiscoStyleConfig(lines);
+  const parsedAclRules = isCloud
+    ? parseCloudAclRules(lines)
+    : isForti
+      ? parseFortigateAclRules(lines)
+      : isMikrotik
+        ? parseMikrotikAclRules(lines)
+        : isVyos
+          ? parseVyosAclRules(lines)
+          : isGaia
+            ? parseCheckpointGaiaAclRules(lines)
+            : isJunosSet
+              ? parseJunosAclRules(lines)
+              : isPanSet
+                ? parsePanOsAclRules(lines)
+                : parseCiscoStyleAclRules(lines);
   if (parsedAclRules.length > 0) {
     node.aclRules = parsedAclRules;
   }
@@ -2665,7 +3094,7 @@ const KNOWN_CISCO_GLOBAL_RE =
   /^(?:version|hostname|service|no\s+|enable|boot|logging|ip\s+(?:vrf|route|prefix-list|access-list|nat|sla|dhcp|pim|multicast|routing|cef|domain|name-server|ssh)|ipv6\s+(?:unicast-routing|route)|vrf\s+(?:definition|context)|vrf-leak\s+|rd\s+|route-target\s+|address-family\s+|exit-address-family|interface\s+|router\s+(?:ospf|bgp|eigrp|isis|rip|lisp)|route-map\s+|match\s+|set\s+|vpc\s+domain|mlag\s+configuration|spanning-tree\s+|lldp\s+run|mpls\s+|segment-routing|ptp\s+|ntp\s+|bmp\s+|flow\s+|access-list\s+|track\s+|crypto\s+|feature\s+|evpn|vni\s+|member\s+|source-interface|host-reachability|exit\b|end\b)/i;
 
 const KNOWN_CISCO_SUB_RE =
-  /^(?:description|vrf\s+(?:forwarding|member)|ip\s+(?:address|unnumbered|verify|ospf|router\s+ospf|router\s+isis|summary-address|hello-interval|hold-time|bandwidth-percent|pim|helper-address|dhcp|arp|access-group|nat|policy)|ipv6\s+(?:address|ospf|nd)|encapsulation\s+dot1[qQ]|switchport|no\s+|shutdown|passive-interface|mtu\s+|speed\s+|bandwidth\s+|delay\s+|standby\s+|vrrp\s+|glbp\s+|channel-group\s+|channel-protocol\s+|vpc\s+|mlag\s+|macsec|dot1x|evpn\s+|isis\s+|bfd\s+|router-id|eigrp\s+|bgp\s+|neighbor\s+|network\s+|redistribute\s+|default-information|default-metric|auto-cost|max-metric|variance\s+|area\s+|maximum-paths|timers\s+|net\s+|is-type|metric-style|metric\s+|set-overload-bit|multi-topology|summary-address|aggregate-address|distance\s+|auto-summary|version\s+|address-family|exit-address-family|locator-table|instance-id|rloc-probing|service\s+ipv4|eid-prefix|database-mapping|map-server|map-resolver|itr\b|etr\b|proxy-itr|proxy-etr|role\s+priority|system-priority|peer-keepalive|peer-gateway|peer-switch|layer3\s+peer-router|auto-recovery|ip\s+arp\s+synchronize|delay\s+restore|domain-id|local-interface|peer-address|peer-link|reload-delay|rd\s+|route-target\s+|seq\s+|permit\b|deny\b|remark\b|match\s+|set\s+|exit\b)/i;
+  /^(?:\d+\s+(?:permit|deny|remark)\b|description|vrf\s+(?:forwarding|member)|zone-member\s+|global-block\s+|remote-as\s+|update-source\s+|ebgp-multihop|next-hop-self|route-reflector-client|send-community|maximum-prefix|fall-over|graceful-restart|hsrp\s+|priority\s+|ip\s+(?:address|unnumbered|verify|ospf|router\s+ospf|router\s+isis|summary-address|hello-interval|hold-time|bandwidth-percent|pim|helper-address|dhcp|arp|access-group|nat|policy|\d+\.\d+\.\d+\.\d+)|ipv6\s+(?:address|ospf|nd)|encapsulation\s+dot1[qQ]|switchport|no\s+|shutdown|passive-interface|mtu\s+|speed\s+|bandwidth\s+|delay\s+|standby\s+|vrrp\s+|glbp\s+|channel-group\s+|channel-protocol\s+|vpc\s+|mlag\s+|macsec|dot1x|evpn\s+|isis\s+|bfd\s+|router-id|eigrp\s+|bgp\s+|neighbor\s+|network\s+|redistribute\s+|default-information|default-metric|auto-cost|max-metric|variance\s+|area\s+|maximum-paths|timers\s+|net\s+|is-type|metric-style|metric\s+|set-overload-bit|multi-topology|summary-address|aggregate-address|distance\s+|auto-summary|version\s+|address-family|exit-address-family|locator-table|instance-id|rloc-probing|service\s+ipv4|eid-prefix|database-mapping|map-server|map-resolver|itr\b|etr\b|proxy-itr|proxy-etr|role\s+priority|system-priority|peer-keepalive|peer-gateway|peer-switch|layer3\s+peer-router|auto-recovery|ip\s+arp\s+synchronize|delay\s+restore|domain-id|local-interface|peer-address|peer-link|reload-delay|rd\s+|route-target\s+|seq\s+|permit\b|deny\b|remark\b|match\s+|set\s+|exit\b)/i;
 
 export function validateRunningConfig(text: string): ConfigValidationIssue[] {
   const issues: ConfigValidationIssue[] = [];
@@ -2695,13 +3124,51 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
     return issues;
   }
 
+  const isCloudConfig = rawLines.some((l) =>
+    /^(?:resource\s+"[^"]+"\s+"[^"]+"\s*\{|(?:aws\s+(?:ec2|networkmanager)|az\s+network|gcloud\s+compute|oci\s+network|cf-magic-wan)\b)/i.test(
+      l.trim()
+    )
+  );
+  if (isCloudConfig) {
+    let braceDepth = 0;
+    rawLines.forEach((raw, idx) => {
+      const t = raw.trim();
+      if (!t || t.startsWith('#') || t.startsWith('//')) return;
+      const codeOnly = t.replace(/#.*$/, '');
+      const opens = (codeOnly.match(/\{/g) || []).length;
+      const closes = (codeOnly.match(/\}/g) || []).length;
+      braceDepth += opens - closes;
+      if (braceDepth < 0) {
+        issues.push({
+          line: idx + 1,
+          severity: 'error',
+          message: 'Unexpected "}" without matching "{".',
+        });
+        braceDepth = 0;
+      }
+    });
+    if (braceDepth > 0) {
+      issues.push({
+        line: rawLines.length,
+        severity: 'error',
+        message: `Unclosed Terraform HCL block (${braceDepth} missing "}").`,
+      });
+    }
+    return issues;
+  }
+
   const isForti = rawLines.some((l) => /^config\s+(?:system|router|firewall|vpn)/i.test(l.trim()));
   const isMikrotik = !isForti && rawLines.some((l) => /^\/(?:ip|ipv6|system|routing|interface)\b/i.test(l.trim()));
   const isSetStyle =
     !isForti &&
     !isMikrotik &&
-    rawLines.some((l) => /^set\s+/i.test(l.trim())) &&
+    rawLines.some((l) => /^(?:set\s+|(?:mgmt_cli\s+)?add\s+(?:access-rule|host|network)\b)/i.test(l.trim())) &&
     !rawLines.some((l) => /^(?:interface\s+\S+|router\s+(?:ospf|bgp|eigrp|isis|rip))/i.test(l.trim()));
+  const isViptela =
+    !isForti &&
+    !isMikrotik &&
+    rawLines.some((l) => /^system-ip\s+/i.test(l.trim())) &&
+    rawLines.some((l) => /^(?:omp|vpn\s+0)\b/i.test(l.trim()));
 
   if (isForti) {
     let depth = 0;
@@ -2723,7 +3190,7 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
     return issues;
   }
 
-  if (isMikrotik || isSetStyle) {
+  if (isMikrotik || isSetStyle || isViptela) {
     return issues;
   }
 
@@ -2776,9 +3243,10 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
       return;
     }
 
-    // Interface-only subcommands used outside an interface block
+    // Interface-only subcommands used outside an interface block (shutdown is also valid in router bgp)
     if (
       section !== 'interface' &&
+      !(section === 'bgp' && /^shutdown\b/i.test(t)) &&
       /^(?:ip\s+address|encapsulation\s+dot1[qQ]|channel-group|switchport|shutdown)\b/i.test(t)
     ) {
       issues.push({

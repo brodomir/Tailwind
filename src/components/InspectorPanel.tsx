@@ -175,6 +175,249 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               )}
             </div>
           </Card>
+
+          {(node.vendor === 'aws-cloud' ||
+            node.vendor === 'aws-cloudwan' ||
+            node.vendor === 'azure-cloud' ||
+            node.vendor === 'gcp-cloud' ||
+            node.vendor === 'oci-cloud' ||
+            node.vendor === 'cloudflare-mwan') && (
+            <Card size="small" title="Cloud Routing Policy">
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <div className="mb-1 text-[11px] text-slate-400">Region / Edge</div>
+                    <Input
+                      size="small"
+                      placeholder={
+                        node.vendor === 'azure-cloud'
+                          ? 'eastus'
+                          : node.vendor === 'gcp-cloud'
+                            ? 'us-central1'
+                            : node.vendor === 'oci-cloud'
+                              ? 'us-ashburn-1'
+                              : node.vendor === 'cloudflare-mwan'
+                                ? 'global-anycast'
+                                : 'us-east-1'
+                      }
+                      value={node.cloudConfig?.region ?? ''}
+                      onChange={(e) =>
+                        updateNode(node.id, {
+                          cloudConfig: { ...node.cloudConfig, region: e.target.value || undefined },
+                        })
+                      }
+                    />
+                  </div>
+                  {node.vendor === 'gcp-cloud' && (
+                    <div>
+                      <div className="mb-1 text-[11px] text-slate-400">Dynamic Routing Mode</div>
+                      <Select
+                        size="small"
+                        className="w-full"
+                        value={node.cloudConfig?.dynamicRoutingMode ?? 'global'}
+                        onChange={(val: 'regional' | 'global') =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, dynamicRoutingMode: val },
+                          })
+                        }
+                        options={[
+                          { label: 'GLOBAL', value: 'global' },
+                          { label: 'REGIONAL', value: 'regional' },
+                        ]}
+                      />
+                    </div>
+                  )}
+                  {node.vendor === 'gcp-cloud' && (
+                    <div>
+                      <div className="mb-1 text-[11px] text-slate-400">Default Route Priority</div>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={65535}
+                        className="!w-full"
+                        value={node.cloudConfig?.defaultRoutePriority ?? 1000}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, defaultRoutePriority: val ?? 1000 },
+                          })
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {node.vendor !== 'cloudflare-mwan' && (
+                  <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-300">
+                        Prefer Private Circuit over IPsec VPN
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        DX / ExpressRoute / Interconnect / FastConnect beats IPsec BGP
+                      </div>
+                    </div>
+                    <Switch
+                      size="small"
+                      checked={node.cloudConfig?.preferPrivateCircuit !== false}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          cloudConfig: { ...node.cloudConfig, preferPrivateCircuit: checked },
+                        })
+                      }
+                    />
+                  </div>
+                )}
+
+                {(node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') && (
+                  <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-300">Appliance Mode Support</div>
+                      <div className="text-[10px] text-slate-400">Symmetric AZ flow pinning for inspection firewalls</div>
+                    </div>
+                    <Switch
+                      size="small"
+                      checked={!!node.cloudConfig?.applianceMode}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          cloudConfig: { ...node.cloudConfig, applianceMode: checked },
+                        })
+                      }
+                    />
+                  </div>
+                )}
+
+                {node.vendor === 'azure-cloud' && (
+                  <>
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">UDR Overrides BGP Routes</div>
+                        <div className="text-[10px] text-slate-400">Static User-Defined Routes take priority over BGP</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={node.cloudConfig?.udrOverridesBgp !== false}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, udrOverridesBgp: checked },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">Disable BGP Route Propagation</div>
+                        <div className="text-[10px] text-slate-400">Suppresses ExpressRoute/VPN BGP routes on this route table</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={!!node.cloudConfig?.disableBgpPropagation}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, disableBgpPropagation: checked },
+                          })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
+
+                {node.vendor === 'gcp-cloud' && (
+                  <>
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">Private Google Access (PGA)</div>
+                        <div className="text-[10px] text-slate-400">Private routes to 199.36.153.8/30 & 199.36.153.4/30</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={!!node.cloudConfig?.privateGoogleAccess}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, privateGoogleAccess: checked },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">Advertise PGA to On-Prem (BGP)</div>
+                        <div className="text-[10px] text-slate-400">Advertises Google API VIPs over Interconnect / VPN</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={!!node.cloudConfig?.pgaOnPremAdvertise}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: {
+                              ...node.cloudConfig,
+                              pgaOnPremAdvertise: checked,
+                              ...(checked ? { privateGoogleAccess: true } : {}),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">Network Connectivity Center (NCC) Hub</div>
+                        <div className="text-[10px] text-slate-400">Transitive hub-and-spoke across VPC & hybrid spokes</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={!!node.cloudConfig?.nccHubEnabled}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, nccHubEnabled: checked },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[11px] text-slate-400">
+                        Private Service Connect (PSC) / PSA CIDRs
+                      </div>
+                      <Select
+                        mode="tags"
+                        size="small"
+                        className="w-full"
+                        tokenSeparators={[',', ' ']}
+                        placeholder="Type CIDR and press Enter (e.g. 10.240.0.10/32)"
+                        value={node.cloudConfig?.pscEndpoints ?? []}
+                        onChange={(vals: string[]) =>
+                          updateNode(node.id, {
+                            cloudConfig: {
+                              ...node.cloudConfig,
+                              pscEndpoints: vals.map((s) => s.trim()).filter(Boolean),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <div className="mb-1 text-[11px] text-slate-400">Blackhole CIDRs</div>
+                  <Select
+                    mode="tags"
+                    size="small"
+                    className="w-full"
+                    tokenSeparators={[',', ' ']}
+                    placeholder="Type CIDR and press Enter (e.g. 192.0.2.0/24)"
+                    value={node.cloudConfig?.blackholeCidrs ?? []}
+                    onChange={(vals: string[]) =>
+                      updateNode(node.id, {
+                        cloudConfig: {
+                          ...node.cloudConfig,
+                          blackholeCidrs: vals.map((s) => s.trim()).filter(Boolean),
+                        },
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </Card>
+          )}
         </div>
       ),
     },
@@ -935,12 +1178,24 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     },
     {
       key: 'static',
-      label: `Static & PBR (${node.staticRoutes.length + pbrRules.length})`,
+      label: node.vendor === 'azure-cloud'
+        ? `Azure UDRs (${node.staticRoutes.length})`
+        : node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan'
+          ? `AWS Route Tables (${node.staticRoutes.length})`
+          : node.vendor === 'gcp-cloud'
+            ? `GCP VPC Routes (${node.staticRoutes.length})`
+            : `Static & PBR (${node.staticRoutes.length + pbrRules.length})`,
       children: (
         <div className="space-y-3">
           <div className="space-y-1.5">
             <div className="text-[11px] font-semibold text-slate-300">
-              Static Routes (IPv4 / IPv6)
+              {node.vendor === 'azure-cloud'
+                ? 'Azure User Defined Routes (UDRs)'
+                : node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan'
+                  ? 'AWS VPC / TGW Route Table Entries'
+                  : node.vendor === 'gcp-cloud'
+                    ? 'GCP VPC Custom & System Routes (Priority 0–65535)'
+                    : 'Static Routes (IPv4 / IPv6)'}
             </div>
             {node.staticRoutes.map((sr) => (
               <div key={sr.id} className="grid grid-cols-12 items-center gap-1.5">
@@ -1008,24 +1263,133 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     })
                   }
                 />
-                <Select
-                  size="small"
-                  allowClear
-                  className="col-span-5"
-                  placeholder="Track Object (optional)"
-                  value={sr.trackId}
-                  onChange={(val) =>
-                    updateNode(node.id, {
-                      staticRoutes: node.staticRoutes.map((x) =>
-                        x.id === sr.id ? { ...x, trackId: val || undefined } : x
-                      ),
-                    })
-                  }
-                  options={(node.tracks ?? []).map((t) => ({
-                    value: t.id,
-                    label: `Track ${t.id}: ${t.targetIp}`,
-                  }))}
-                />
+                {node.vendor === 'azure-cloud' ? (
+                  <Select
+                    size="small"
+                    className="col-span-5"
+                    placeholder="Next-Hop Type"
+                    value={sr.azureNextHopType ?? 'VirtualAppliance'}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        staticRoutes: node.staticRoutes.map((x) =>
+                          x.id === sr.id
+                            ? {
+                                ...x,
+                                azureNextHopType: val,
+                                nextHop:
+                                  val === 'None'
+                                    ? 'blackhole'
+                                    : val === 'Internet'
+                                      ? 'internet'
+                                      : val === 'VnetLocal'
+                                        ? '0.0.0.0'
+                                        : x.nextHop,
+                              }
+                            : x
+                        ),
+                      })
+                    }
+                    options={[
+                      { value: 'VirtualAppliance', label: 'VirtualAppliance (NVA)' },
+                      { value: 'None', label: 'None (Drop / Blackhole)' },
+                      { value: 'Internet', label: 'Internet (Direct Breakout)' },
+                      { value: 'VnetLocal', label: 'VnetLocal' },
+                      { value: 'VirtualNetworkGateway', label: 'VirtualNetworkGateway' },
+                    ]}
+                  />
+                ) : node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan' ? (
+                  <Select
+                    size="small"
+                    className="col-span-5"
+                    placeholder="AWS Target"
+                    value={sr.awsTargetType ?? 'tgw'}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        staticRoutes: node.staticRoutes.map((x) =>
+                          x.id === sr.id
+                            ? {
+                                ...x,
+                                awsTargetType: val,
+                                nextHop:
+                                  val === 'igw'
+                                    ? 'igw'
+                                    : val === 'nat'
+                                      ? 'nat-gw'
+                                      : val === 'blackhole'
+                                        ? 'blackhole'
+                                        : val === 'local'
+                                          ? '0.0.0.0'
+                                          : x.nextHop,
+                              }
+                            : x
+                        ),
+                      })
+                    }
+                    options={[
+                      { value: 'igw', label: 'Internet Gateway (igw)' },
+                      { value: 'nat', label: 'NAT Gateway (nat-gw)' },
+                      { value: 'tgw', label: 'Transit Gateway (tgw)' },
+                      { value: 'pcx', label: 'VPC Peering (pcx)' },
+                      { value: 'vgw', label: 'VGW — DX / VPN (vgw)' },
+                      { value: 'vpce', label: 'VPC Endpoint / NFW (vpce)' },
+                      { value: 'blackhole', label: 'Blackhole (Drop)' },
+                      { value: 'local', label: 'Local (Intra-VPC)' },
+                    ]}
+                  />
+                ) : node.vendor === 'gcp-cloud' ? (
+                  <Select
+                    size="small"
+                    className="col-span-5"
+                    placeholder="GCP Next-Hop Type"
+                    value={sr.gcpNextHopType ?? 'next-hop-address'}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        staticRoutes: node.staticRoutes.map((x) =>
+                          x.id === sr.id
+                            ? {
+                                ...x,
+                                gcpNextHopType: val,
+                                nextHop:
+                                  val === 'default-internet-gateway'
+                                    ? 'gcp-igw'
+                                    : val === 'cloud-nat'
+                                      ? 'gcp-nat'
+                                      : x.nextHop,
+                              }
+                            : x
+                        ),
+                      })
+                    }
+                    options={[
+                      { value: 'default-internet-gateway', label: 'Default Internet Gateway' },
+                      { value: 'cloud-nat', label: 'Cloud NAT (Outbound SNAT)' },
+                      { value: 'ilb', label: 'Internal Load Balancer (ILB)' },
+                      { value: 'next-hop-address', label: 'Next-Hop IP (NVA)' },
+                      { value: 'vpn-tunnel', label: 'Cloud VPN Tunnel' },
+                      { value: 'interconnect', label: 'Cloud Interconnect' },
+                      { value: 'vpc-peering', label: 'VPC Network Peering' },
+                    ]}
+                  />
+                ) : (
+                  <Select
+                    size="small"
+                    allowClear
+                    className="col-span-5"
+                    placeholder="Track Object (optional)"
+                    value={sr.trackId}
+                    onChange={(val) =>
+                      updateNode(node.id, {
+                        staticRoutes: node.staticRoutes.map((x) =>
+                          x.id === sr.id ? { ...x, trackId: val || undefined } : x
+                        ),
+                      })
+                    }
+                    options={(node.tracks ?? []).map((t) => ({
+                      value: t.id,
+                      label: `Track ${t.id}: ${t.targetIp}`,
+                    }))}
+                  />
+                )}
                 <InputNumber
                   size="small"
                   className="col-span-2 !w-full"
@@ -6434,7 +6798,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 >
                   <span>
                     <strong>{src?.hostname}</strong>:
-                    <span className="font-mono text-sky-300">{sIf?.name}</span> â†”{' '}
+                    <span className="font-mono text-sky-300">{sIf?.name}</span> ↔{' '}
                     <strong>{dst?.hostname}</strong>:
                     <span className="font-mono text-sky-300">{dIf?.name}</span>
                     {l.linkType === 'ipsec' && (

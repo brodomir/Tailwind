@@ -151,7 +151,19 @@ export const TopBar: React.FC = () => {
         setSearchOpen((prev) => !prev);
         return;
       }
-      if (e.key === 'Escape' && !searchOpen && !roaOpen && !shortcutsOpen && !importOpen && !diagOpen && traceResult) {
+      if (
+        e.key === 'Escape' &&
+        !searchOpen &&
+        !roaOpen &&
+        !shortcutsOpen &&
+        !importOpen &&
+        !diagOpen &&
+        !exportOpen &&
+        !newWsOpen &&
+        wsNameModalMode === null &&
+        !testsOpen &&
+        traceResult
+      ) {
         clearTrace();
         return;
       }
@@ -656,7 +668,7 @@ export const TopBar: React.FC = () => {
                       pickedIf?.vrf || traceVrf,
                       traceProto,
                       tracePort,
-                      val
+                      val ?? null
                     );
                   }}
                   style={{ width: 115 }}
@@ -992,7 +1004,7 @@ export const TopBar: React.FC = () => {
                           test.vrf,
                           test.protocol ?? 'any',
                           test.dstPort ?? null,
-                          undefined,
+                          test.srcInterfaceId ?? null,
                           test.srcIp ?? null
                         );
                         setTraceResult(trace);

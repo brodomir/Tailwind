@@ -80,6 +80,10 @@ interface CandidateRoute {
   tloc?: RibEntry['tloc'];
   lisp?: RibEntry['lisp'];
   evpnVni?: number;
+  azureNextHopType?: RibEntry['azureNextHopType'];
+  awsTargetType?: RibEntry['awsTargetType'];
+  gcpNextHopType?: RibEntry['gcpNextHopType'];
+  gcpPriority?: number;
 }
 
 const OSPF_TYPE_RANK: Record<OspfRouteType, number> = {
@@ -729,6 +733,29 @@ function resolveNextHop(
     if (iface) {
       return { resolvable: true, egressInterface: iface.name, igpMetric: 0 };
     }
+  }
+
+  if (
+    nextHop.toLowerCase() === 'blackhole' ||
+    nextHop.toLowerCase() === 'internet' ||
+    nextHop.toLowerCase() === 'igw' ||
+    nextHop.toLowerCase() === 'nat-gw' ||
+    nextHop.toLowerCase() === 'gcp-igw' ||
+    nextHop.toLowerCase() === 'gcp-nat' ||
+    nextHop.toLowerCase() === 'gcp-pga' ||
+    nextHop.toLowerCase() === 'gcp-psc' ||
+    explicitInterface?.toLowerCase() === 'blackhole' ||
+    explicitInterface?.toLowerCase() === 'null0' ||
+    explicitInterface?.toLowerCase() === 'internet' ||
+    explicitInterface?.toLowerCase() === 'vnetlocal' ||
+    explicitInterface?.toLowerCase() === 'igw' ||
+    explicitInterface?.toLowerCase() === 'nat-gw' ||
+    explicitInterface?.toLowerCase() === 'default-internet-gateway' ||
+    explicitInterface?.toLowerCase() === 'cloud-nat' ||
+    explicitInterface?.toLowerCase() === 'private-google-access' ||
+    explicitInterface?.toLowerCase() === 'psc-endpoint'
+  ) {
+    return { resolvable: true, egressInterface: explicitInterface || nextHop, igpMetric: 0 };
   }
 
   if (nextHop === '0.0.0.0' || nextHop === '::') {
@@ -1603,7 +1630,17 @@ function solveBgp(
     nodeMultipathBgp.set(node.id, new Map<string, CandidateRoute[]>());
     if (!node.bgp.enabled) continue;
 
-    for (const net of node.bgp.networks) {
+    const bgpNetworksToOriginate = [
+      ...node.bgp.networks,
+      ...(node.vendor === 'gcp-cloud' && node.cloudConfig?.pgaOnPremAdvertise
+        ? [
+            { id: 'gcp-pga-restricted', prefix: '199.36.153.8/30', origin: 'igp' as const },
+            { id: 'gcp-pga-private', prefix: '199.36.153.4/30', origin: 'igp' as const },
+          ]
+        : []),
+    ];
+
+    for (const net of bgpNetworksToOriginate) {
       const af = detectAddressFamily(net.prefix);
       if (!af) continue;
       const parsed = af === 4 ? parseCidr(net.prefix) : parseCidr6(net.prefix);
@@ -3057,7 +3094,8 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           ? node.interfaces.find((src) => src.name === iface.unnumberedSource)?.cidr ?? ''
           : iface.cidr;
       const parsed = parseCidr(effectiveCidr);
-      if (!parsed) {
+      const parsed6 = iface.cidr6 ? parseCidr6(iface.cidr6) : null;
+      if (!parsed && !parsed6) {
         const isL2Port =
           !iface.cidr?.trim() &&
           topology.links.some(
@@ -3083,40 +3121,40 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
       }
 
       const vrf = iface.vrf || 'default';
-      const allV4Cidrs = [effectiveCidr, ...(iface.secondaryCidrs ?? [])];
-      for (const cStr of allV4Cidrs) {
-        const cp = parseCidr(cStr);
-        if (!cp) continue;
-        const conn: CandidateRoute = {
-          prefix: cp.network,
-          prefixLen: cp.prefixLen,
-          vrf,
-          protocol: 'connected',
-          ad: getEffectiveAd(node.vendor, 'connected', node.adOverrides),
-          metric: 0,
-          nextHop: '0.0.0.0',
-          egressInterface: iface.name,
-        };
-        const local: CandidateRoute = {
-          prefix: cp.ip,
-          prefixLen: 32,
-          vrf,
-          protocol: 'local',
-          ad: getEffectiveAd(node.vendor, 'local', node.adOverrides),
-          metric: 0,
-          nextHop: '0.0.0.0',
-          egressInterface: iface.name,
-        };
-        base.push(conn, local);
-        initialActive.push(
-          { ...conn, active: true, ecmp: false },
-          { ...local, active: true, ecmp: false }
-        );
+      if (parsed) {
+        const allV4Cidrs = [effectiveCidr, ...(iface.secondaryCidrs ?? [])];
+        for (const cStr of allV4Cidrs) {
+          const cp = parseCidr(cStr);
+          if (!cp) continue;
+          const conn: CandidateRoute = {
+            prefix: cp.network,
+            prefixLen: cp.prefixLen,
+            vrf,
+            protocol: 'connected',
+            ad: getEffectiveAd(node.vendor, 'connected', node.adOverrides),
+            metric: 0,
+            nextHop: '0.0.0.0',
+            egressInterface: iface.name,
+          };
+          const local: CandidateRoute = {
+            prefix: cp.ip,
+            prefixLen: 32,
+            vrf,
+            protocol: 'local',
+            ad: getEffectiveAd(node.vendor, 'local', node.adOverrides),
+            metric: 0,
+            nextHop: '0.0.0.0',
+            egressInterface: iface.name,
+          };
+          base.push(conn, local);
+          initialActive.push(
+            { ...conn, active: true, ecmp: false },
+            { ...local, active: true, ecmp: false }
+          );
+        }
       }
 
-      if (iface.cidr6) {
-        const parsed6 = parseCidr6(iface.cidr6);
-        if (parsed6) {
+      if (parsed6) {
           const conn6: CandidateRoute = {
             af: 6,
             prefix: parsed6.network,
@@ -3144,7 +3182,6 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
             { ...conn6, active: true, ecmp: false },
             { ...local6, active: true, ecmp: false }
           );
-        }
       }
     }
 
@@ -3231,13 +3268,55 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
         if (!af) continue;
         const parsed = af === 4 ? parseCidr(sr.prefix) : parseCidr6(sr.prefix);
         if (!parsed) continue;
-        const ad =
+        let ad =
           sr.ad !== undefined
             ? sr.ad
             : getEffectiveAd(node.vendor, 'static', node.adOverrides);
+        if (node.vendor === 'azure-cloud' && node.cloudConfig?.udrOverridesBgp === false && sr.ad === undefined) {
+          ad = 30;
+        }
         let staticEgress = sr.interfaceName ?? '';
+        let staticNextHop = sr.nextHop;
+        if (node.vendor === 'azure-cloud' && sr.azureNextHopType) {
+          if (sr.azureNextHopType === 'None') {
+            staticNextHop = 'blackhole';
+            staticEgress = 'blackhole';
+          } else if (sr.azureNextHopType === 'Internet') {
+            staticNextHop = sr.nextHop || 'internet';
+            staticEgress = sr.interfaceName || 'Internet';
+          } else if (sr.azureNextHopType === 'VnetLocal') {
+            staticNextHop = '0.0.0.0';
+            staticEgress = sr.interfaceName || 'VnetLocal';
+          }
+        }
+        if ((node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') && sr.awsTargetType) {
+          if (sr.awsTargetType === 'blackhole') {
+            staticNextHop = 'blackhole';
+            staticEgress = 'blackhole';
+          } else if (sr.awsTargetType === 'igw') {
+            staticNextHop = 'igw';
+            staticEgress = sr.interfaceName || 'igw';
+          } else if (sr.awsTargetType === 'nat') {
+            staticNextHop = 'nat-gw';
+            staticEgress = sr.interfaceName || 'nat-gw';
+          } else if (sr.awsTargetType === 'local') {
+            staticNextHop = '0.0.0.0';
+            staticEgress = sr.interfaceName || 'local';
+          }
+        }
+        let staticMetric = 0;
+        if (node.vendor === 'gcp-cloud') {
+          staticMetric = sr.gcpPriority ?? node.cloudConfig?.defaultRoutePriority ?? 1000;
+          if (sr.gcpNextHopType === 'default-internet-gateway') {
+            staticNextHop = 'gcp-igw';
+            staticEgress = sr.interfaceName || 'default-internet-gateway';
+          } else if (sr.gcpNextHopType === 'cloud-nat') {
+            staticNextHop = 'gcp-nat';
+            staticEgress = sr.interfaceName || 'cloud-nat';
+          }
+        }
         if (sr.globalNextHop) {
-          const gRes = resolveNextHop(sr.nextHop, sr.interfaceName, 'default', prevRib, node);
+          const gRes = resolveNextHop(staticNextHop, sr.interfaceName, 'default', prevRib, node);
           if (!gRes.resolvable) continue;
           staticEgress = gRes.egressInterface;
         }
@@ -3248,15 +3327,115 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           vrf: sr.vrf || 'default',
           protocol: 'static',
           ad,
-          metric: 0,
-          nextHop: sr.nextHop,
+          metric: staticMetric,
+          nextHop: staticNextHop,
           egressInterface: staticEgress,
           tag: sr.tag,
+          azureNextHopType: sr.azureNextHopType,
+          awsTargetType: sr.awsTargetType,
+          gcpNextHopType: sr.gcpNextHopType,
+          gcpPriority: sr.gcpPriority,
         });
       }
 
+      // Cloud blackhole routes (AWS TGW / Cloud WAN / Azure vHub / GCP / OCI)
+      for (const bhCidr of node.cloudConfig?.blackholeCidrs ?? []) {
+        const af = detectAddressFamily(bhCidr);
+        if (!af) continue;
+        const parsed = af === 4 ? parseCidr(bhCidr) : parseCidr6(bhCidr);
+        if (!parsed) continue;
+        candidates.push({
+          af,
+          prefix: parsed.network,
+          prefixLen: parsed.prefixLen,
+          vrf: 'default',
+          protocol: 'static',
+          ad: 1,
+          metric: 0,
+          nextHop: 'blackhole',
+          egressInterface: 'blackhole',
+          azureNextHopType: node.vendor === 'azure-cloud' ? 'None' : undefined,
+        });
+      }
+
+      // GCP Private Google Access (restricted.googleapis.com & private.googleapis.com) + PSC/PSA endpoints
+      if (node.vendor === 'gcp-cloud') {
+        if (node.cloudConfig?.privateGoogleAccess || node.cloudConfig?.pgaOnPremAdvertise) {
+          for (const pgaCidr of ['199.36.153.8/30', '199.36.153.4/30']) {
+            const parsed = parseCidr(pgaCidr);
+            if (!parsed) continue;
+            candidates.push({
+              af: 4,
+              prefix: parsed.network,
+              prefixLen: parsed.prefixLen,
+              vrf: 'default',
+              protocol: 'static',
+              ad: 1,
+              metric: 100,
+              nextHop: 'gcp-pga',
+              egressInterface: 'private-google-access',
+            });
+          }
+        }
+        for (const pscCidr of node.cloudConfig?.pscEndpoints ?? []) {
+          const af = detectAddressFamily(pscCidr);
+          if (!af) continue;
+          const parsed = af === 4 ? parseCidr(pscCidr) : parseCidr6(pscCidr);
+          if (!parsed) continue;
+          candidates.push({
+            af,
+            prefix: parsed.network,
+            prefixLen: parsed.prefixLen,
+            vrf: 'default',
+            protocol: 'static',
+            ad: 1,
+            metric: 100,
+            nextHop: 'gcp-psc',
+            egressInterface: 'psc-endpoint',
+          });
+        }
+      }
+
       candidates.push(...(ospfCands.get(node.id) ?? []));
-      candidates.push(...(bgpCands.get(node.id) ?? []));
+      const isPublicCloud =
+        node.vendor === 'aws-cloud' ||
+        node.vendor === 'aws-cloudwan' ||
+        node.vendor === 'azure-cloud' ||
+        node.vendor === 'gcp-cloud' ||
+        node.vendor === 'oci-cloud';
+      const disableAzureBgp =
+        node.vendor === 'azure-cloud' && Boolean(node.cloudConfig?.disableBgpPropagation);
+      const preferPrivate = isPublicCloud && node.cloudConfig?.preferPrivateCircuit !== false;
+      const nodeBgpCands = disableAzureBgp ? [] : (bgpCands.get(node.id) ?? []);
+      if (preferPrivate && nodeBgpCands.length > 0) {
+        const nodeAdjs = adjMap.get(node.id) ?? [];
+        for (const bc of nodeBgpCands) {
+          if (bc.protocol === 'ebgp') {
+            const matchedAdj = nodeAdjs.find(
+              (a) => a.remoteIp === bc.nextHop || a.remoteIp6 === bc.nextHop
+            );
+            const isIpsecLink =
+              matchedAdj &&
+              topology.links.some(
+                (l) =>
+                  l.linkType === 'ipsec' &&
+                  ((l.sourceNodeId === node.id &&
+                    l.sourceInterfaceId === matchedAdj.localIface.id &&
+                    l.targetNodeId === matchedAdj.remoteNodeId) ||
+                    (l.targetNodeId === node.id &&
+                      l.targetInterfaceId === matchedAdj.localIface.id &&
+                      l.sourceNodeId === matchedAdj.remoteNodeId))
+              );
+            if (isIpsecLink) {
+              candidates.push({ ...bc, ad: bc.ad + 5 });
+              continue;
+            }
+          }
+          candidates.push(bc);
+        }
+      } else {
+        candidates.push(...nodeBgpCands);
+      }
       candidates.push(...(eigrpCands.get(node.id) ?? []));
       candidates.push(...(isisCands.get(node.id) ?? []));
       candidates.push(...(ripCands.get(node.id) ?? []));
@@ -3606,6 +3785,10 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           tloc: c.tloc,
           lisp: c.lisp,
           evpnVni: c.evpnVni,
+          azureNextHopType: c.azureNextHopType,
+          awsTargetType: c.awsTargetType,
+          gcpNextHopType: c.gcpNextHopType,
+          gcpPriority: c.gcpPriority,
         };
         const key = `${c.af ?? 4}|${c.vrf}|${c.prefix}/${c.prefixLen}`;
         const list = byPrefix.get(key);
@@ -4394,8 +4577,14 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
 function inferHostIpFromInterface(iface: InterfaceConfig | undefined): string {
   if (!iface) return '0.0.0.0';
   const parsed = parseCidr(iface.cidr);
-  if (!parsed) return iface.cidr.split('/')[0] ?? '0.0.0.0';
-  if (parsed.prefixLen >= 31) return parsed.ip;
+  if (!parsed) {
+    if (iface.cidr6) {
+      const parsed6 = parseCidr6(iface.cidr6);
+      if (parsed6) return parsed6.ip;
+    }
+    return iface.cidr.split('/')[0] || '0.0.0.0';
+  }
+  if (parsed.prefixLen >= 29) return parsed.ip;
   const candidate = parsed.networkUint32 + 10;
   return candidate === parsed.ipUint32
     ? uint32ToIp(parsed.networkUint32 + 11)
@@ -4433,7 +4622,8 @@ export function tracePacket(
 
   const nodeMap = new Map(topology.nodes.map((n) => [n.id, n]));
   const standbyNodes = computeStandbyNodes(topology);
-  const adjMap = buildAdjacencies(topology, [], standbyNodes);
+  const stpTrace = computeStpAndLldp(topology, []);
+  const adjMap = buildAdjacencies(topology, [], standbyNodes, stpTrace.blockedL2Ports);
   const hops: PacketTraceHop[] = [];
   const visited = new Set<string>();
   let currentId: string | null = srcNodeId;
@@ -4952,7 +5142,14 @@ export function tracePacket(
       }
     }
 
-    if (best.protocol === 'local' || best.protocol === 'connected') {
+    if (
+      best.protocol === 'local' ||
+      best.protocol === 'connected' ||
+      best.azureNextHopType === 'VnetLocal' ||
+      best.awsTargetType === 'local' ||
+      selectedEgressIf.toLowerCase() === 'vnetlocal' ||
+      selectedEgressIf.toLowerCase() === 'local'
+    ) {
       if (overlayInnerDstIp) {
         const isTunnelEndpoint =
           (Boolean(node.sdwan?.enabled) ||
@@ -4988,10 +5185,18 @@ export function tracePacket(
         aclMatched: acl.matchedRule,
         natApplied: natNote,
       });
+      const deliveryIfaceId = node.interfaces.find(
+        (i) => i.name.toLowerCase() === (best.egressInterface || '').toLowerCase()
+      )?.id;
       const returnTrace =
-        !opts?.skipReturn && node.id !== srcNodeId && currentSrcIp && currentSrcIp !== '0.0.0.0'
+        !opts?.skipReturn &&
+        node.id !== srcNodeId &&
+        currentSrcIp &&
+        currentSrcIp !== '0.0.0.0' &&
+        currentSrcIp !== '::'
           ? tracePacket(topology, simResult, node.id, currentSrcIp, currentVrf, {
               srcIp: currentDstIp,
+              srcInterfaceId: deliveryIfaceId,
               protocol: l4Proto,
               dstPort,
               skipReturn: true,
@@ -5046,6 +5251,120 @@ export function tracePacket(
           : undefined,
         };
       }
+    }
+
+    if (
+      selectedNextHop.toLowerCase() === 'internet' ||
+      selectedEgressIf.toLowerCase() === 'internet' ||
+      selectedNextHop.toLowerCase() === 'igw' ||
+      selectedEgressIf.toLowerCase() === 'igw' ||
+      selectedNextHop.toLowerCase() === 'nat-gw' ||
+      selectedEgressIf.toLowerCase() === 'nat-gw' ||
+      selectedNextHop.toLowerCase() === 'gcp-igw' ||
+      selectedEgressIf.toLowerCase() === 'default-internet-gateway' ||
+      selectedNextHop.toLowerCase() === 'gcp-nat' ||
+      selectedEgressIf.toLowerCase() === 'cloud-nat' ||
+      selectedNextHop.toLowerCase() === 'gcp-pga' ||
+      selectedEgressIf.toLowerCase() === 'private-google-access' ||
+      selectedNextHop.toLowerCase() === 'gcp-psc' ||
+      selectedEgressIf.toLowerCase() === 'psc-endpoint'
+    ) {
+      const isAwsNat = selectedNextHop.toLowerCase() === 'nat-gw' || selectedEgressIf.toLowerCase() === 'nat-gw';
+      const isAwsIgw = selectedNextHop.toLowerCase() === 'igw' || selectedEgressIf.toLowerCase() === 'igw';
+      const isGcpNat = selectedNextHop.toLowerCase() === 'gcp-nat' || selectedEgressIf.toLowerCase() === 'cloud-nat';
+      const isGcpIgw = selectedNextHop.toLowerCase() === 'gcp-igw' || selectedEgressIf.toLowerCase() === 'default-internet-gateway';
+      const isGcpPga = selectedNextHop.toLowerCase() === 'gcp-pga' || selectedEgressIf.toLowerCase() === 'private-google-access';
+      const isGcpPsc = selectedNextHop.toLowerCase() === 'gcp-psc' || selectedEgressIf.toLowerCase() === 'psc-endpoint';
+      const gwNote = isAwsNat
+        ? [natNote, `AWS NAT Gateway SNAT (${currentSrcIp} -> EIP)`].filter(Boolean).join(' | ')
+        : isGcpNat
+          ? [natNote, `GCP Cloud NAT SNAT (${currentSrcIp} -> Cloud NAT IP)`].filter(Boolean).join(' | ')
+          : natNote;
+      hops.push({
+        nodeId: node.id,
+        hostname: node.hostname,
+        vrf: currentVrf,
+        ingressInterface: currentIngressIf,
+        egressInterface: isAwsNat
+          ? 'nat-gw'
+          : isAwsIgw
+            ? 'igw'
+            : isGcpNat
+              ? 'cloud-nat'
+              : isGcpIgw
+                ? 'default-internet-gateway'
+                : isGcpPga
+                  ? 'private-google-access'
+                  : isGcpPsc
+                    ? 'psc-endpoint'
+                    : 'Internet',
+        nextHop: isAwsNat
+          ? 'aws-nat-gw'
+          : isAwsIgw
+            ? 'aws-igw'
+            : isGcpNat
+              ? 'gcp-cloud-nat'
+              : isGcpIgw
+                ? 'gcp-default-igw'
+                : isGcpPga
+                  ? 'googleapis-private'
+                  : isGcpPsc
+                    ? 'psc-service-producer'
+                    : 'azure-internet',
+        matchedPrefix,
+        protocol: best.protocol,
+        ad: best.ad,
+        metric: best.metric,
+        status: 'delivered',
+        routeStatus: 'ok',
+        aclStatus: 'allowed',
+        aclMatched: acl.matchedRule,
+        natApplied: gwNote,
+      });
+      return {
+        dstIp,
+        srcIp: currentSrcIp,
+        srcNodeId,
+        srcInterfaceId: opts?.srcInterfaceId,
+        vrf,
+        hops,
+        outcome: 'delivered',
+      };
+    }
+
+    if (
+      selectedNextHop.toLowerCase() === 'blackhole' ||
+      selectedEgressIf.toLowerCase() === 'blackhole' ||
+      selectedEgressIf.toLowerCase() === 'null0'
+    ) {
+      hops.push({
+        nodeId: node.id,
+        hostname: node.hostname,
+        vrf: currentVrf,
+        ingressInterface: currentIngressIf,
+        egressInterface: selectedEgressIf || 'blackhole',
+        nextHop: 'blackhole',
+        matchedPrefix,
+        protocol: best.protocol,
+        ad: best.ad,
+        metric: best.metric,
+        status: 'dropped',
+        routeStatus: 'no-route',
+        aclStatus: 'allowed',
+        aclMatched: acl.matchedRule,
+        natApplied: natNote,
+      });
+      return {
+        dstIp,
+        srcIp: currentSrcIp,
+        srcNodeId,
+        srcInterfaceId: opts?.srcInterfaceId,
+        vrf,
+        hops,
+        outcome: 'dropped',
+        blockedNodeId: node.id,
+        failureReason: `Dropped by blackhole route ${matchedPrefix} on ${node.hostname} [${currentVrf}]`,
+      };
     }
 
     const nextAdj: Adjacency | undefined =

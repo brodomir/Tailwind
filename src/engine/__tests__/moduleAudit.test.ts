@@ -367,4 +367,193 @@ end`).nodes[0];
       expect(legacySim.nodes['leg'].rib.some((r) => r.active && r.protocol === 'connected')).toBe(true);
     });
   });
+
+  describe('10. Cloud expansion & auto-arrange spacing', () => {
+    it('supports AWS/Azure/GCP/OCI/Cloudflare Terraform & CLI round-trip, cloud firewalls, blackhole routes, and non-overlapping auto-layout', () => {
+      const awsTf = `resource "aws_ec2_transit_gateway" "tgw_prod" {
+  description = "AWS-TGW-PROD"
+  amazon_side_asn = 64512
+  appliance_mode_support = "enable"
+}
+resource "aws_route" "nat_default" {
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id = "nat-0123456789"
+}
+resource "aws_route" "pcx_partner" {
+  destination_cidr_block = "172.30.0.0/16"
+  vpc_peering_connection_id = "pcx-0abcdef123"
+}
+resource "aws_ec2_transit_gateway_route" "bh1" {
+  destination_cidr_block = "192.0.2.0/24"
+  blackhole = true
+}
+resource "aws_network_acl_rule" "allow_https" {
+  rule_number = 100
+  rule_action = "allow"
+  protocol = "tcp"
+  cidr_block = "10.0.0.0/8"
+  from_port = 443
+  to_port = 443
+}`;
+      const awsNode = importTopologyFromText(awsTf).nodes[0];
+      expect(awsNode.vendor).toBe('aws-cloud');
+      expect(awsNode.hostname).toBe('AWS-TGW-PROD');
+      expect(awsNode.cloudConfig?.applianceMode).toBe(true);
+      expect(awsNode.cloudConfig?.blackholeCidrs).toContain('192.0.2.0/24');
+      expect(awsNode.staticRoutes.some((r) => r.awsTargetType === 'nat' && r.prefix === '0.0.0.0/0')).toBe(true);
+      expect(awsNode.staticRoutes.some((r) => r.awsTargetType === 'pcx' && r.prefix === '172.30.0.0/16')).toBe(true);
+      expect(awsNode.aclRules?.[0]).toMatchObject({ action: 'allow', protocol: 'tcp', dstPort: 443 });
+      expect(formatRunningConfig(awsNode)).toContain('aws_ec2_transit_gateway');
+      expect(formatRunningConfig(awsNode)).toContain('nat_gateway_id');
+
+      // Verify AWS NAT Gateway SNAT breakout + blackhole drop in tracePacket
+      const awsSim = solveTopology({ nodes: [awsNode], links: [] });
+      const awsNatTrace = tracePacket({ nodes: [awsNode], links: [] }, awsSim, awsNode.id, '8.8.8.8', 'default', {
+        srcIp: '10.0.0.10',
+        protocol: 'tcp',
+        dstPort: 443,
+        skipReturn: true,
+      });
+      expect(awsNatTrace.outcome).toBe('delivered');
+      expect(awsNatTrace.hops[0].natApplied).toContain('AWS NAT Gateway SNAT');
+
+      // Verify AWS CLI `aws ec2 create-route` with IGW
+      const awsCliNode = importTopologyFromText('aws ec2 create-route --route-table-id rtb-1 --destination-cidr-block 0.0.0.0/0 --gateway-id igw-123').nodes[0];
+      expect(awsCliNode.staticRoutes[0]).toMatchObject({ prefix: '0.0.0.0/0', awsTargetType: 'igw' });
+
+      const azCli = `az network route-table create --name hub-rt --disable-bgp-route-propagation true
+az network route-table route create --name udr1 --address-prefix 10.99.0.0/24 --next-hop-type VirtualAppliance --next-hop-ip-address 10.0.0.4
+az network route-table route create --name udr2 --address-prefix 0.0.0.0/0 --next-hop-type Internet
+az network route-table route create --name udr3 --address-prefix 198.51.100.0/24 --next-hop-type None
+az network nsg rule create --name Allow-HTTPS --priority 110 --access Allow --protocol Tcp --source-address-prefixes 10.0.0.0/8 --destination-address-prefixes * --destination-port-ranges 443`;
+      const azNode = importTopologyFromText(azCli).nodes[0];
+      expect(azNode.vendor).toBe('azure-cloud');
+      expect(azNode.cloudConfig?.disableBgpPropagation).toBe(true);
+      expect(azNode.staticRoutes[0]).toMatchObject({ prefix: '10.99.0.0/24', nextHop: '10.0.0.4', azureNextHopType: 'VirtualAppliance' });
+      expect(azNode.staticRoutes[1]).toMatchObject({ prefix: '0.0.0.0/0', azureNextHopType: 'Internet' });
+      expect(azNode.staticRoutes[2]).toMatchObject({ prefix: '198.51.100.0/24', azureNextHopType: 'None' });
+      expect(azNode.aclRules?.[0]).toMatchObject({ name: 'Allow-HTTPS', action: 'allow', protocol: 'tcp', dstPort: 443 });
+      expect(formatRunningConfig(azNode)).toContain('disable_bgp_route_propagation = true');
+      expect(formatRunningConfig(azNode)).toContain('next_hop_type          = "Internet"');
+
+      // Verify Azure UDR execution (Internet breakout, None drop, and BGP suppression)
+      const azSim = solveTopology({ nodes: [azNode], links: [] });
+      expect(
+        tracePacket({ nodes: [azNode], links: [] }, azSim, azNode.id, '8.8.4.4', 'default', {
+          srcIp: '10.0.0.10',
+          protocol: 'tcp',
+          dstPort: 443,
+          skipReturn: true,
+        }).outcome
+      ).toBe('delivered');
+      expect(
+        tracePacket({ nodes: [azNode], links: [] }, azSim, azNode.id, '198.51.100.5', 'default', {
+          srcIp: '10.0.0.10',
+          protocol: 'tcp',
+          dstPort: 443,
+          skipReturn: true,
+        }).outcome
+      ).toBe('dropped');
+
+      const gcpCli = `gcloud compute routes create r1 --destination-range=10.88.0.0/24 --next-hop-address=10.0.0.5 --priority=500 --tags=web-tier
+gcloud compute routes create r-inet --destination-range=0.0.0.0/0 --next-hop-gateway=default-internet-gateway --priority=1000
+gcloud compute firewall-rules create allow-ssh --priority=1000 --allow=tcp:22 --source-ranges=10.0.0.0/8`;
+      const gcpNode = importTopologyFromText(gcpCli).nodes[0];
+      gcpNode.cloudConfig = {
+        ...gcpNode.cloudConfig,
+        privateGoogleAccess: true,
+        pgaOnPremAdvertise: true,
+        nccHubEnabled: true,
+        pscEndpoints: ['10.240.0.10/32'],
+      };
+      expect(gcpNode.vendor).toBe('gcp-cloud');
+      expect(gcpNode.staticRoutes[0]).toMatchObject({ prefix: '10.88.0.0/24', gcpNextHopType: 'next-hop-address', gcpPriority: 500, networkTag: 'web-tier' });
+      expect(gcpNode.staticRoutes[1]).toMatchObject({ prefix: '0.0.0.0/0', gcpNextHopType: 'default-internet-gateway', gcpPriority: 1000 });
+      expect(gcpNode.aclRules?.[0]).toMatchObject({ name: 'allow-ssh', action: 'allow', protocol: 'tcp', dstPort: 22 });
+      const gcpTf = formatRunningConfig(gcpNode);
+      expect(validateRunningConfig(gcpTf)).toEqual([]);
+      expect(validateRunningConfig(formatRunningConfig(awsNode))).toEqual([]);
+      expect(validateRunningConfig(formatRunningConfig(azNode))).toEqual([]);
+      expect(gcpTf).toContain('next_hop_gateway = "default-internet-gateway"');
+      expect(gcpTf).toContain('google_network_connectivity_hub');
+      expect(gcpTf).toContain('199.36.153.8/30');
+      expect(gcpTf).toContain('10.240.0.10/32');
+      expect(gcpTf).toContain('tags       = ["web-tier"]');
+
+      // Verify GCP default-internet-gateway, PGA (199.36.153.8), and PSC (10.240.0.10) traces
+      const gcpSim = solveTopology({ nodes: [gcpNode], links: [] });
+      for (const dst of ['8.8.8.8', '199.36.153.8', '10.240.0.10']) {
+        expect(
+          tracePacket({ nodes: [gcpNode], links: [] }, gcpSim, gcpNode.id, dst, 'default', {
+            srcIp: '10.0.0.10',
+            protocol: 'tcp',
+            dstPort: 22,
+            skipReturn: true,
+          }).outcome
+        ).toBe('delivered');
+      }
+
+      // Auto-arrange spacing check on the 9-branch MPLS+DMVPN preset
+      useSimStore.getState().loadPreset('cisco-mpls-dmvpn');
+      useSimStore.getState().autoLayoutTopology();
+      const laidOut = useSimStore.getState().topology.nodes;
+      for (let i = 0; i < laidOut.length; i++) {
+        for (let j = i + 1; j < laidOut.length; j++) {
+          const dx = Math.abs(laidOut[i].position.x - laidOut[j].position.x);
+          const dy = Math.abs(laidOut[i].position.y - laidOut[j].position.y);
+          // Nodes on the same row must have at least 340px horizontal separation; different rows at least 270px vertical
+          expect(dx >= 340 || dy >= 270).toBe(true);
+        }
+      }
+    });
+
+    it('covers bug-hunt regressions: FortiGate BGP enable, Cloud hostname/CF round-trip, VnetLocal/local trace, IPv6-only iface, and store defaults', () => {
+      // 1. FortiGate `config router bgp` must set bgp.enabled = true
+      const fgtBgp = importTopologyFromText(`config system global
+    set hostname "FGT-BGP"
+end
+config router bgp
+    set as 65123
+    set router-id 10.0.0.1
+end`).nodes[0];
+      expect(fgtBgp.bgp.enabled).toBe(true);
+      expect(fgtBgp.bgp.asn).toBe(65123);
+
+      // 2. Azure/GCP/Cloudflare Terraform HCL round-trip preserves exact hostname (not -udr / -ncc-hub / description)
+      const gcpRoundTripSrc = makeMinimalNode('g1', 'GCP-HUB-1', 'gcp-cloud');
+      gcpRoundTripSrc.cloudConfig = { region: 'us-central1', nccHubEnabled: true, pgaOnPremAdvertise: true, privateGoogleAccess: true };
+      const gcpReimported = importTopologyFromText(formatRunningConfig(gcpRoundTripSrc)).nodes[0];
+      expect(gcpReimported.vendor).toBe('gcp-cloud');
+      expect(gcpReimported.hostname).toBe('GCP-HUB-1');
+
+      const cfSrc = makeMinimalNode('cf1', 'CF-EDGE-1', 'cloudflare-mwan');
+      const cfReimported = importTopologyFromText(formatRunningConfig(cfSrc)).nodes[0];
+      expect(cfReimported.vendor).toBe('cloudflare-mwan');
+      expect(cfReimported.hostname).toBe('CF-EDGE-1');
+
+      // 3. Azure VnetLocal UDR delivers cleanly in tracePacket (instead of dropping as unreachable)
+      const azLocal = makeMinimalNode('az-loc', 'AZ-LOC', 'azure-cloud');
+      azLocal.staticRoutes = [{ id: 'u1', vrf: 'default', prefix: '10.77.0.0/16', nextHop: '0.0.0.0', azureNextHopType: 'VnetLocal' }];
+      const azLocalSim = solveTopology({ nodes: [azLocal], links: [] });
+      expect(tracePacket({ nodes: [azLocal], links: [] }, azLocalSim, 'az-loc', '10.77.1.5', 'default', { skipReturn: true }).outcome).toBe('delivered');
+
+      // 4. IPv6-only interface installs connected/local IPv6 routes with zero warnings
+      const v6Only = makeMinimalNode('v6', 'V6-ONLY', 'cisco-ios-xe');
+      v6Only.interfaces = [{ id: 'v6-i1', name: 'Gi0/0', cidr: '', cidr6: '2001:db8:99::1/64', vrf: 'default' }];
+      const v6Sim = solveTopology({ nodes: [v6Only], links: [] });
+      expect(v6Sim.warnings).toHaveLength(0);
+      expect(v6Sim.nodes['v6'].rib.some((r) => r.af === 6 && r.prefix === '2001:db8:99::' && r.active)).toBe(true);
+
+      // 5. Store: addNode on cloud disables OSPF & enables BGP; setTraceParams(..., null) clears traceSrcInterfaceId
+      useSimStore.getState().createWorkspace('BugHuntTest');
+      useSimStore.getState().addNode('aws-cloud');
+      const addedAws = useSimStore.getState().topology.nodes[0];
+      expect(addedAws.ospf.enabled).toBe(false);
+      expect(addedAws.bgp.enabled).toBe(true);
+      useSimStore.getState().setTraceParams(addedAws.id, '8.8.8.8', 'default', 'any', null, addedAws.interfaces[0].id);
+      expect(useSimStore.getState().traceSrcInterfaceId).toBe(addedAws.interfaces[0].id);
+      useSimStore.getState().setTraceParams(addedAws.id, '8.8.8.8', 'default', 'any', null, null);
+      expect(useSimStore.getState().traceSrcInterfaceId).toBeUndefined();
+    });
+  });
 });

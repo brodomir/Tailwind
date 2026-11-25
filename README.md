@@ -86,7 +86,7 @@ CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ```bash
-docker build --build-arg APP_VERSION=v0.2.0-beta.5 -t tailwind-net-sim .
+docker build --build-arg APP_VERSION=v0.2.0-beta.6 -t tailwind-net-sim .
 docker run -d -p 8080:80 --name tailwind tailwind-net-sim
 ```
 

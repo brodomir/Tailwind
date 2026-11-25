@@ -132,8 +132,23 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
   }, [selectedNodeId, formattedConfig]);
 
   const secondaryText = node && result ? formatSecondaryCli(node, result) : '';
+  const hasSecondaryTab = Boolean(
+    node && secondaryText && (VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).secondaryCliCmd
+  );
+  const hasStandardsTab = Boolean(
+    result &&
+      (result.lfib?.length ||
+        result.stpState ||
+        result.lldpNeighbors?.length ||
+        result.mroute?.length ||
+        result.evpnDfState?.length ||
+        result.bmpSummary)
+  );
   const effectiveActiveKey =
-    activeKey === 'secondary' && !secondaryText ? 'primary' : activeKey;
+    (activeKey === 'secondary' && !hasSecondaryTab) ||
+    (activeKey === 'standards' && !hasStandardsTab)
+      ? 'primary'
+      : activeKey;
   const configIssues = useMemo(
     () => (node && result && effectiveActiveKey === 'config' ? validateRunningConfig(draftConfig) : []),
     [node, result, effectiveActiveKey, draftConfig]
@@ -195,7 +210,6 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     try {
       await navigator.clipboard.writeText(activeText);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
       if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
       copyTimerRef.current = window.setTimeout(() => setCopied(false), 1800);
     } catch {

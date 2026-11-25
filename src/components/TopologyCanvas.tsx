@@ -58,7 +58,8 @@ const DeviceNode: React.FC<NodeProps<Node<DeviceNodeData>>> = ({ data }) => {
   const isFirewall =
     node.vendor === 'pan-os' ||
     node.vendor === 'forcepoint-ngfw' ||
-    node.vendor === 'fortigate';
+    node.vendor === 'fortigate' ||
+    node.vendor === 'checkpoint-gaia';
   const isCloud = meta.category === 'cloud';
 
   const ringClass =
@@ -608,28 +609,6 @@ export const TopologyCanvas: React.FC = () => {
   } | null>(null);
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
 
-  React.useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      if (selectedNodeId) {
-        e.preventDefault();
-        deleteNode(selectedNodeId);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedNodeId, deleteNode]);
-
   const tracedNodeStatus = useMemo(() => {
     const map = new Map<string, 'hop' | 'delivered' | 'dropped' | 'loop' | 'blocked'>();
     if (!traceResult) return map;
@@ -730,7 +709,7 @@ export const TopologyCanvas: React.FC = () => {
     const boxW = 195;
     const boxH = 44;
     const nodeBoxes = topology.nodes.map((n) => {
-      const isCloud = n.vendor.endsWith('-cloud');
+      const isCloud = (VENDOR_METADATA[n.vendor]?.category ?? 'appliance') === 'cloud';
       const w = isCloud ? 280 : 215;
       const h = isCloud ? 150 : 100;
       return {

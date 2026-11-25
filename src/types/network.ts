@@ -16,8 +16,11 @@ export type VendorProfile =
   | 'mpls-cloud'
   | 'internet-cloud'
   | 'aws-cloud'
+  | 'aws-cloudwan'
   | 'azure-cloud'
-  | 'gcp-cloud';
+  | 'gcp-cloud'
+  | 'oci-cloud'
+  | 'cloudflare-mwan';
 
 export type ProtocolType =
   | 'connected'
@@ -199,6 +202,7 @@ export interface AclRuleConfig {
   dstCidr: string;
   protocol: L4Protocol;
   dstPort?: number;
+  networkTag?: string;
 }
 
 export interface NatRuleConfig {
@@ -211,6 +215,32 @@ export interface NatRuleConfig {
   translatedIp: string;
 }
 
+export type AzureUdrNextHopType =
+  | 'VirtualAppliance'
+  | 'None'
+  | 'Internet'
+  | 'VnetLocal'
+  | 'VirtualNetworkGateway';
+
+export type AwsRouteTargetType =
+  | 'igw'
+  | 'nat'
+  | 'tgw'
+  | 'pcx'
+  | 'vgw'
+  | 'vpce'
+  | 'blackhole'
+  | 'local';
+
+export type GcpRouteNextHopType =
+  | 'default-internet-gateway'
+  | 'cloud-nat'
+  | 'ilb'
+  | 'next-hop-address'
+  | 'vpn-tunnel'
+  | 'interconnect'
+  | 'vpc-peering';
+
 export interface StaticRouteConfig {
   id: string;
   vrf: string;
@@ -221,6 +251,11 @@ export interface StaticRouteConfig {
   interfaceName?: string;
   trackId?: string;
   globalNextHop?: boolean;
+  azureNextHopType?: AzureUdrNextHopType;
+  awsTargetType?: AwsRouteTargetType;
+  gcpNextHopType?: GcpRouteNextHopType;
+  gcpPriority?: number;
+  networkTag?: string;
 }
 
 export interface OspfNetworkConfig {
@@ -554,6 +589,20 @@ export interface NodeConfig {
     peerLinkInterfaceId?: string;
     reloadDelay?: number;
   };
+  cloudConfig?: {
+    region?: string;
+    dynamicRoutingMode?: 'regional' | 'global';
+    applianceMode?: boolean;
+    udrOverridesBgp?: boolean;
+    disableBgpPropagation?: boolean;
+    preferPrivateCircuit?: boolean;
+    blackholeCidrs?: string[];
+    defaultRoutePriority?: number;
+    privateGoogleAccess?: boolean;
+    pgaOnPremAdvertise?: boolean;
+    nccHubEnabled?: boolean;
+    pscEndpoints?: string[];
+  };
 }
 
 export interface LinkConfig {
@@ -654,6 +703,11 @@ export interface RibEntry {
     weight: number;
   };
   evpnVni?: number;
+  azureNextHopType?: AzureUdrNextHopType;
+  awsTargetType?: AwsRouteTargetType;
+  gcpNextHopType?: GcpRouteNextHopType;
+  gcpPriority?: number;
+  networkTag?: string;
 }
 
 export interface FibEntry {

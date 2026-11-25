@@ -305,7 +305,7 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
       if (t === '!') currentAclName = null;
       continue;
     }
-    const extAcl = t.match(/^ip\s+access-list\s+extended\s+(\S+)/i);
+    const extAcl = t.match(/^(?:ipv4\s+access-list|ip\s+access-list(?:\s+(?:extended|standard))?|access-list\s+ip)\s+(\S+)/i);
     if (extAcl) {
       currentAclName = extAcl[1];
       continue;
@@ -437,11 +437,11 @@ export function parseMikrotikAclRules(lines: string[]): AclRuleConfig[] {
     const dstM = line.match(/\bdst-address=(\S+)/i);
     const protoM = line.match(/\bprotocol=(tcp|udp|icmp)/i);
     const portM = line.match(/\bdst-port=(\d+)/i);
-    const cmtM = line.match(/\bcomment="?([^"]+)"?/i);
+    const cmtM = line.match(/\bcomment=(?:"([^"]+)"|(\S+))/i);
     rules.push({
       id: `acl-mt-${Date.now()}-${rules.length}`,
       seq: (rules.length + 1) * 10,
-      name: cmtM?.[1]?.trim() || `mt-filter-${rules.length + 1}`,
+      name: (cmtM?.[1] ?? cmtM?.[2])?.trim() || `mt-filter-${rules.length + 1}`,
       action: act === 'accept' ? 'allow' : 'deny',
       srcCidr: srcM ? resolveAddressToken(srcM[1], new Map()) : '0.0.0.0/0',
       dstCidr: dstM ? resolveAddressToken(dstM[1], new Map()) : '0.0.0.0/0',
@@ -486,5 +486,163 @@ export function parseCheckpointGaiaAclRules(lines: string[]): AclRuleConfig[] {
       dstPort: svc.dstPort,
     });
   }
+  return rules;
+}
+
+/**
+ * Cloud firewall / security rule importer supporting:
+ * - AWS Terraform (`aws_network_acl_rule`, `aws_security_group_rule`)
+ * - Azure Terraform & CLI (`azurerm_network_security_rule`, `az network nsg rule create`)
+ * - GCP Terraform & CLI (`google_compute_firewall`, `gcloud compute firewall-rules create`)
+ */
+export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
+  const rules: AclRuleConfig[] = [];
+  let blockKind: 'aws-nacl' | 'aws-sg' | 'azure-nsg' | 'gcp-fw' | null = null;
+  let blockName = '';
+  let seq = 10;
+  let action: 'allow' | 'deny' = 'allow';
+  let protocol: L4Protocol = 'any';
+  let srcCidr = '0.0.0.0/0';
+  let dstCidr = '0.0.0.0/0';
+  let dstPort: number | undefined;
+  let braceDepth = 0;
+
+  const flushBlock = () => {
+    if (!blockKind) return;
+    rules.push({
+      id: `acl-cloud-${Date.now()}-${rules.length}`,
+      seq,
+      name: blockName || `cloud-rule-${rules.length + 1}`,
+      action,
+      srcCidr,
+      dstCidr,
+      protocol,
+      ...(dstPort !== undefined ? { dstPort } : {}),
+    });
+    blockKind = null;
+    blockName = '';
+    action = 'allow';
+    protocol = 'any';
+    srcCidr = '0.0.0.0/0';
+    dstCidr = '0.0.0.0/0';
+    dstPort = undefined;
+    braceDepth = 0;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+    // CLI single-line forms: Azure `az network nsg rule create`
+    if (/^az\s+network\s+nsg\s+rule\s+create\b/i.test(line)) {
+      const nameM = line.match(/--name\s+"?([^"\s]+)"?/i);
+      const prioM = line.match(/--priority\s+(\d+)/i);
+      const accM = line.match(/--access\s+"?(Allow|Deny)"?/i);
+      const protoM = line.match(/--protocol\s+"?([^"\s]+)"?/i);
+      const srcM = line.match(/--source-address-prefix(?:es)?\s+"?([^"\s]+)"?/i);
+      const dstM = line.match(/--destination-address-prefix(?:es)?\s+"?([^"\s]+)"?/i);
+      const portM = line.match(/--destination-port-ranges?\s+"?(\d+)/i);
+      const p = (protoM?.[1] ?? '*').toLowerCase();
+      rules.push({
+        id: `acl-az-${Date.now()}-${rules.length}`,
+        seq: prioM ? Number(prioM[1]) : (rules.length + 1) * 10,
+        name: nameM?.[1] || `az-nsg-${rules.length + 1}`,
+        action: (accM?.[1] ?? 'Allow').toLowerCase() === 'deny' ? 'deny' : 'allow',
+        srcCidr: !srcM || srcM[1] === '*' ? '0.0.0.0/0' : srcM[1],
+        dstCidr: !dstM || dstM[1] === '*' ? '0.0.0.0/0' : dstM[1],
+        protocol: p === 'tcp' || p === 'udp' || p === 'icmp' ? (p as L4Protocol) : 'any',
+        ...(portM ? { dstPort: Number(portM[1]) } : {}),
+      });
+      continue;
+    }
+
+    // CLI single-line forms: GCP `gcloud compute firewall-rules create`
+    if (/^gcloud\s+compute\s+firewall-rules\s+create\b/i.test(line)) {
+      const nameM = line.match(/firewall-rules\s+create\s+"?([^"\s]+)"?/i);
+      const prioM = line.match(/--priority[=\s]+(\d+)/i);
+      const allowM = line.match(/--allow[=\s]+"?([^"\s]+)"?/i);
+      const denyM = line.match(/--rules[=\s]+"?([^"\s]+)"?/i);
+      const actM = line.match(/--action[=\s]+"?(ALLOW|DENY)"?/i);
+      const srcM = line.match(/--source-ranges[=\s]+"?([^"\s,]+)"?/i);
+      const ruleToken = (allowM?.[1] ?? denyM?.[1] ?? 'all').toLowerCase();
+      const [protoPart, portPart] = ruleToken.split(':');
+      const parsedProto: L4Protocol =
+        protoPart === 'tcp' || protoPart === 'udp' || protoPart === 'icmp' ? (protoPart as L4Protocol) : 'any';
+      const parsedPort = portPart && /^\d+/.test(portPart) ? Number(portPart.match(/^\d+/)![0]) : undefined;
+      rules.push({
+        id: `acl-gcp-${Date.now()}-${rules.length}`,
+        seq: prioM ? Number(prioM[1]) : (rules.length + 1) * 10,
+        name: nameM?.[1] || `gcp-fw-${rules.length + 1}`,
+        action: (actM?.[1] ?? 'ALLOW').toLowerCase() === 'deny' ? 'deny' : 'allow',
+        srcCidr: srcM?.[1] || '0.0.0.0/0',
+        dstCidr: '0.0.0.0/0',
+        protocol: parsedProto,
+        ...(parsedPort !== undefined ? { dstPort: parsedPort } : {}),
+      });
+      continue;
+    }
+
+    // Terraform HCL resource blocks
+    const resM = line.match(/^resource\s+"([^"]+)"\s+"([^"]+)"\s*\{/);
+    if (resM) {
+      flushBlock();
+      const rType = resM[1].toLowerCase();
+      if (rType === 'aws_network_acl_rule') blockKind = 'aws-nacl';
+      else if (rType === 'aws_security_group_rule') blockKind = 'aws-sg';
+      else if (rType === 'azurerm_network_security_rule') blockKind = 'azure-nsg';
+      else if (rType === 'google_compute_firewall') blockKind = 'gcp-fw';
+      if (blockKind) {
+        blockName = resM[2];
+        seq = (rules.length + 1) * 10;
+        braceDepth = 1;
+      }
+      continue;
+    }
+
+    if (!blockKind) continue;
+
+    if (/^deny\s*\{/i.test(line)) {
+      action = 'deny';
+      braceDepth++;
+      continue;
+    }
+    if (/^allow\s*\{/i.test(line)) {
+      action = 'allow';
+      braceDepth++;
+      continue;
+    }
+    if (line.includes('{')) braceDepth += (line.match(/\{/g) || []).length;
+
+    const nameEq = line.match(/^name\s*=\s*"([^"]+)"/);
+    if (nameEq) blockName = nameEq[1];
+    const seqEq = line.match(/^(?:rule_number|priority)\s*=\s*(\d+)/);
+    if (seqEq) seq = Number(seqEq[1]);
+    const actEq = line.match(/^(?:rule_action|access)\s*=\s*"([^"]+)"/i);
+    if (actEq) action = actEq[1].toLowerCase() === 'deny' ? 'deny' : 'allow';
+    const protoEq = line.match(/^protocol\s*=\s*"([^"]+)"/i);
+    if (protoEq) {
+      const p = protoEq[1].toLowerCase();
+      if (p === 'tcp' || p === '6') protocol = 'tcp';
+      else if (p === 'udp' || p === '17') protocol = 'udp';
+      else if (p === 'icmp' || p === '1') protocol = 'icmp';
+      else protocol = 'any';
+    }
+    const srcEq = line.match(/^(?:cidr_block|source_address_prefix)\s*=\s*"([^"]+)"/i);
+    if (srcEq) srcCidr = srcEq[1] === '*' ? '0.0.0.0/0' : srcEq[1];
+    const srcArrEq = line.match(/^(?:cidr_blocks|source_ranges)\s*=\s*\[\s*"([^"]+)"/i);
+    if (srcArrEq) srcCidr = srcArrEq[1];
+    const dstEq = line.match(/^destination_address_prefix\s*=\s*"([^"]+)"/i);
+    if (dstEq) dstCidr = dstEq[1] === '*' ? '0.0.0.0/0' : dstEq[1];
+    const portEq = line.match(/^(?:from_port|destination_port_range)\s*=\s*"?(\d+)"?/i);
+    if (portEq) dstPort = Number(portEq[1]);
+    const portsArrEq = line.match(/^ports\s*=\s*\[\s*"(\d+)/i);
+    if (portsArrEq) dstPort = Number(portsArrEq[1]);
+
+    if (line.includes('}')) {
+      braceDepth -= (line.match(/\}/g) || []).length;
+      if (braceDepth <= 0) flushBlock();
+    }
+  }
+  flushBlock();
   return rules;
 }

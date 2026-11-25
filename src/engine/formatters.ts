@@ -667,6 +667,148 @@ function formatMikrotikCli(node: NodeConfig, result: NodeRoutingResult): string 
   return lines.join('\n');
 }
 
+function formatAlignedTable(headers: string[], rows: string[][]): string[] {
+  const widths = headers.map((h, i) =>
+    Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length))
+  );
+  const fmtRow = (cols: string[]) =>
+    cols
+      .map((c, i) => (i === cols.length - 1 ? c : c.padEnd(widths[i])))
+      .join('  ');
+  const headerLine = fmtRow(headers);
+  const divider = '-'.repeat(headerLine.length);
+  return [headerLine, divider, ...rows.map(fmtRow)];
+}
+
+function formatAwsTgwCli(node: NodeConfig, result: NodeRoutingResult, isSecondary = false): string {
+  const region = node.cloudConfig?.region || 'us-east-1';
+  const isCloudWan = node.vendor === 'aws-cloudwan';
+  const header = isSecondary
+    ? `# AWS VPC Effective Route Tables (${node.hostname} | ${region})`
+    : isCloudWan
+      ? `# aws networkmanager get-network-routes --core-network-id ${node.hostname} (${region})`
+      : `# aws ec2 search-transit-gateway-routes --transit-gateway-route-table-id tgw-rtb-${node.hostname.toLowerCase()} (${region})`;
+  const rows = result.rib
+    .filter((e) => e.active)
+    .map((r) => [
+      `${r.prefix}/${r.prefixLen}`,
+      r.protocol === 'ebgp' || r.protocol === 'ibgp'
+        ? 'propagated'
+        : r.protocol === 'connected' || r.protocol === 'local'
+          ? 'local'
+          : 'static',
+      r.nextHop === 'blackhole' || r.egressInterface === 'blackhole' ? 'blackhole' : 'active',
+      r.awsTargetType
+        ? `${r.awsTargetType}:${r.nextHop}`
+        : `${r.egressInterface || 'local'} (${r.nextHop})`,
+      r.vrf,
+    ]);
+  return [
+    header,
+    `# ASN: ${node.bgp.enabled ? node.bgp.asn : 64512} | ApplianceMode: ${node.cloudConfig?.applianceMode ? 'enable' : 'disable'} | PreferDX: ${node.cloudConfig?.preferPrivateCircuit !== false ? 'true' : 'false'}`,
+    '',
+    ...formatAlignedTable(['DESTINATION', 'TYPE', 'STATE', 'NEXT-HOP / ATTACHMENT', 'ROUTE-TABLE'], rows),
+  ].join('\n');
+}
+
+function formatAzureVhubCli(node: NodeConfig, result: NodeRoutingResult, isSecondary = false): string {
+  const region = node.cloudConfig?.region || 'eastus';
+  const header = isSecondary
+    ? `# az network nic show-effective-route-table (${node.hostname} | ${region})`
+    : `# az network vhub route-table show --vhub-name ${node.hostname} (${region})`;
+  const rows = result.rib
+    .filter((e) => e.active)
+    .map((r) => [
+      `${r.prefix}/${r.prefixLen}`,
+      r.protocol === 'static' ? 'User(UDR)' : r.protocol === 'ebgp' || r.protocol === 'ibgp' ? 'BGP' : 'System',
+      r.azureNextHopType
+        ? r.azureNextHopType
+        : r.nextHop === 'blackhole' || r.egressInterface === 'blackhole'
+          ? 'None'
+          : r.protocol === 'static'
+            ? 'VirtualAppliance'
+            : r.protocol === 'ebgp'
+              ? r.ad <= 20
+                ? 'ExpressRoute'
+                : 'VPN_S2S'
+              : 'VnetLocal',
+      `${r.nextHop} (${r.egressInterface || 'local'})`,
+      r.vrf,
+    ]);
+  return [
+    header,
+    `# ASN: ${node.bgp.enabled ? node.bgp.asn : 65515} | UDR-Overrides-BGP: ${node.cloudConfig?.udrOverridesBgp !== false ? 'true' : 'false'} | DisableBgpProp: ${node.cloudConfig?.disableBgpPropagation ? 'true' : 'false'} | PreferExpressRoute: ${node.cloudConfig?.preferPrivateCircuit !== false ? 'true' : 'false'}`,
+    '',
+    ...formatAlignedTable(['ADDRESS_PREFIX', 'ORIGIN', 'NEXT_HOP_TYPE', 'NEXT_HOP', 'ROUTE_TABLE'], rows),
+  ].join('\n');
+}
+
+function formatGcpRouterCli(node: NodeConfig, result: NodeRoutingResult, isSecondary = false): string {
+  const region = node.cloudConfig?.region || 'us-central1';
+  const mode = (node.cloudConfig?.dynamicRoutingMode ?? 'global').toUpperCase();
+  const header = isSecondary
+    ? `# gcloud compute routes list --filter="network:${node.hostname}" (${region})`
+    : `# gcloud compute routers get-status ${node.hostname} --region=${region} (MODE=${mode})`;
+  const rows = result.rib
+    .filter((e) => e.active)
+    .map((r) => [
+      `${r.prefix}/${r.prefixLen}`,
+      r.protocol === 'ebgp' || r.protocol === 'ibgp' ? 'BGP' : r.protocol === 'static' ? 'STATIC' : 'SUBNET',
+      String(
+        r.protocol === 'connected' || r.protocol === 'local'
+          ? 0
+          : r.gcpPriority ?? (node.cloudConfig?.defaultRoutePriority ?? 1000) + r.ad
+      ),
+      r.gcpNextHopType
+        ? `${r.gcpNextHopType} (${r.nextHop})`
+        : `${r.nextHop} (${r.egressInterface || 'local'})`,
+      r.vrf,
+    ]);
+  return [
+    header,
+    `# ASN: ${node.bgp.enabled ? node.bgp.asn : 64514} | DynamicRoutingMode: ${mode} | NCC-Hub: ${node.cloudConfig?.nccHubEnabled ? 'enabled' : 'disabled'} | PGA: ${node.cloudConfig?.privateGoogleAccess ? 'on' : 'off'} | PGA-OnPrem: ${node.cloudConfig?.pgaOnPremAdvertise ? 'advertised' : 'off'}`,
+    '',
+    ...formatAlignedTable(['DEST_RANGE', 'SOURCE', 'PRIORITY', 'NEXT_HOP', 'NETWORK'], rows),
+  ].join('\n');
+}
+
+function formatOciDrgCli(node: NodeConfig, result: NodeRoutingResult): string {
+  const region = node.cloudConfig?.region || 'us-ashburn-1';
+  const rows = result.rib
+    .filter((e) => e.active)
+    .map((r) => [
+      `${r.prefix}/${r.prefixLen}`,
+      r.protocol === 'static' ? 'STATIC' : 'DYNAMIC',
+      r.protocol === 'ebgp' ? 'FASTCONNECT/IPSEC' : r.protocol === 'connected' ? 'VCN' : 'STATIC',
+      `${r.egressInterface || 'local'} (${r.nextHop})`,
+      r.vrf,
+    ]);
+  return [
+    `# oci network drg-route-table list-drg-route-rules (${node.hostname} | ${region})`,
+    `# ASN: ${node.bgp.enabled ? node.bgp.asn : 31898}`,
+    '',
+    ...formatAlignedTable(['DESTINATION', 'ROUTE_TYPE', 'PROVENANCE', 'NEXT_HOP_ATTACHMENT', 'TABLE'], rows),
+  ].join('\n');
+}
+
+function formatCloudflareMwanCli(node: NodeConfig, result: NodeRoutingResult): string {
+  const rows = result.rib
+    .filter((e) => e.active)
+    .map((r) => [
+      `${r.prefix}/${r.prefixLen}`,
+      r.protocol.toUpperCase(),
+      String(100 + r.ad),
+      `${r.nextHop} (${r.egressInterface || 'anycast'})`,
+      r.vrf,
+    ]);
+  return [
+    `# cf-magic-wan routes list --account ${node.hostname}`,
+    `# ASN: ${node.bgp.enabled ? node.bgp.asn : 13335} | Anycast Edge`,
+    '',
+    ...formatAlignedTable(['PREFIX', 'ORIGIN', 'PRIORITY', 'NEXTHOP / TUNNEL', 'TABLE'], rows),
+  ].join('\n');
+}
+
 export function formatPrimaryCli(node: NodeConfig, result: NodeRoutingResult): string {
   switch (node.vendor) {
     case 'cisco-ios-xe':
@@ -678,10 +820,18 @@ export function formatPrimaryCli(node: NodeConfig, result: NodeRoutingResult): s
     case 'checkpoint-gaia':
     case 'mpls-cloud':
     case 'internet-cloud':
-    case 'aws-cloud':
-    case 'azure-cloud':
-    case 'gcp-cloud':
       return formatCiscoCli(node, result);
+    case 'aws-cloud':
+    case 'aws-cloudwan':
+      return formatAwsTgwCli(node, result, false);
+    case 'azure-cloud':
+      return formatAzureVhubCli(node, result, false);
+    case 'gcp-cloud':
+      return formatGcpRouterCli(node, result, false);
+    case 'oci-cloud':
+      return formatOciDrgCli(node, result);
+    case 'cloudflare-mwan':
+      return formatCloudflareMwanCli(node, result);
     case 'cisco-sdwan':
       return formatSdwanOmpRoutesCli(node, result);
     case 'prisma-sdwan':
@@ -712,10 +862,282 @@ export function formatSecondaryCli(node: NodeConfig, result: NodeRoutingResult):
   if (node.vendor === 'juniper-junos') {
     return formatJunosFibCli(node, result);
   }
+  if (node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') {
+    return formatAwsTgwCli(node, result, true);
+  }
+  if (node.vendor === 'azure-cloud') {
+    return formatAzureVhubCli(node, result, true);
+  }
+  if (node.vendor === 'gcp-cloud') {
+    return formatGcpRouterCli(node, result, true);
+  }
   return null;
 }
 
 export function formatRunningConfig(node: NodeConfig): string {
+  if (node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') {
+    const region = node.cloudConfig?.region || 'us-east-1';
+    const isCwan = node.vendor === 'aws-cloudwan';
+    const lines: string[] = [
+      `# Terraform HCL — ${isCwan ? 'AWS Cloud WAN' : 'AWS Transit Gateway'} (${node.hostname})`,
+      `# Region: ${region}`,
+      `resource "${isCwan ? 'aws_networkmanager_core_network' : 'aws_ec2_transit_gateway'}" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+      `  description                     = "${node.hostname}"`,
+      `  amazon_side_asn                 = ${node.bgp.enabled ? node.bgp.asn : 64512}`,
+      `  appliance_mode_support          = "${node.cloudConfig?.applianceMode ? 'enable' : 'disable'}"`,
+      `}`,
+    ];
+    for (const iface of node.interfaces) {
+      lines.push(
+        ``,
+        `# Attachment ${iface.name} (${iface.vrf || 'default'}) — ${iface.cidr}`,
+        `resource "aws_ec2_transit_gateway_vpc_attachment" "${iface.name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+        `  subnet_cidr = "${iface.cidr}"`,
+        `  route_table = "${iface.vrf || 'default'}"`,
+        `}`
+      );
+    }
+    for (const sr of node.staticRoutes) {
+      const targetAttr =
+        sr.awsTargetType === 'igw'
+          ? `  gateway_id                = "igw-main"`
+          : sr.awsTargetType === 'nat'
+            ? `  nat_gateway_id            = "nat-private"`
+            : sr.awsTargetType === 'pcx'
+              ? `  vpc_peering_connection_id = "pcx-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
+              : sr.awsTargetType === 'vpce'
+                ? `  vpc_endpoint_id           = "vpce-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
+                : sr.awsTargetType === 'vgw'
+                  ? `  gateway_id                = "vgw-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
+                  : sr.awsTargetType === 'blackhole' || sr.nextHop === 'blackhole'
+                    ? `  blackhole                 = true`
+                    : `  next_hop                  = "${sr.nextHop}"`;
+      const resType =
+        sr.awsTargetType === 'igw' || sr.awsTargetType === 'nat' || sr.awsTargetType === 'pcx' || sr.awsTargetType === 'vpce'
+          ? 'aws_route'
+          : 'aws_ec2_transit_gateway_route';
+      lines.push(
+        ``,
+        `resource "${resType}" "route_${sr.id.replace(/[^a-z0-9_]/gi, '_')}" {`,
+        `  destination_cidr_block    = "${sr.prefix}"`,
+        targetAttr,
+        `}`
+      );
+    }
+    for (const bh of node.cloudConfig?.blackholeCidrs ?? []) {
+      lines.push(
+        ``,
+        `resource "aws_ec2_transit_gateway_route" "blackhole_${bh.replace(/[^a-z0-9]/gi, '_')}" {`,
+        `  destination_cidr_block = "${bh}"`,
+        `  blackhole              = true`,
+        `}`
+      );
+    }
+    for (const r of node.aclRules ?? []) {
+      lines.push(
+        ``,
+        `resource "aws_network_acl_rule" "${r.name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+        `  rule_number = ${r.seq}`,
+        `  rule_action = "${r.action}"`,
+        `  protocol    = "${r.protocol === 'any' ? '-1' : r.protocol}"`,
+        `  cidr_block  = "${r.srcCidr === 'any' ? '0.0.0.0/0' : r.srcCidr}"`,
+        ...(r.dstPort !== undefined ? [`  from_port   = ${r.dstPort}`, `  to_port     = ${r.dstPort}`] : []),
+        `}`
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (node.vendor === 'azure-cloud') {
+    const region = node.cloudConfig?.region || 'eastus';
+    const lines: string[] = [
+      `# Terraform HCL — Azure Virtual WAN / vHub & Route Table (${node.hostname})`,
+      `resource "azurerm_virtual_hub" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+      `  name               = "${node.hostname}"`,
+      `  location           = "${region}"`,
+      `  virtual_router_asn = ${node.bgp.enabled ? node.bgp.asn : 65515}`,
+      `}`,
+      ``,
+      `resource "azurerm_route_table" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_udr" {`,
+      `  name                          = "${node.hostname}-udr"`,
+      `  location                      = "${region}"`,
+      `  disable_bgp_route_propagation = ${node.cloudConfig?.disableBgpPropagation ? 'true' : 'false'}`,
+      `}`,
+    ];
+    for (const iface of node.interfaces) {
+      lines.push(
+        ``,
+        `# vHub Connection ${iface.name} (${iface.vrf || 'default'}) — ${iface.cidr}`
+      );
+    }
+    for (const sr of node.staticRoutes) {
+      const nhType = sr.azureNextHopType ?? (sr.nextHop === 'blackhole' ? 'None' : 'VirtualAppliance');
+      lines.push(
+        ``,
+        `resource "azurerm_route" "udr_${sr.id.replace(/[^a-z0-9_]/gi, '_')}" {`,
+        `  name                   = "udr-${sr.id}"`,
+        `  address_prefix         = "${sr.prefix}"`,
+        `  next_hop_type          = "${nhType}"`,
+        ...(nhType === 'VirtualAppliance' && sr.nextHop ? [`  next_hop_in_ip_address = "${sr.nextHop}"`] : []),
+        `}`
+      );
+    }
+    for (const bh of node.cloudConfig?.blackholeCidrs ?? []) {
+      lines.push(
+        ``,
+        `resource "azurerm_route" "blackhole_${bh.replace(/[^a-z0-9]/gi, '_')}" {`,
+        `  name           = "blackhole-${bh.replace(/[^a-z0-9]/gi, '-')}"`,
+        `  address_prefix = "${bh}"`,
+        `  next_hop_type  = "None"`,
+        `}`
+      );
+    }
+    for (const r of node.aclRules ?? []) {
+      lines.push(
+        ``,
+        `resource "azurerm_network_security_rule" "${r.name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+        `  name                       = "${r.name}"`,
+        `  priority                   = ${Math.max(100, r.seq)}`,
+        `  access                     = "${r.action === 'allow' ? 'Allow' : 'Deny'}"`,
+        `  protocol                   = "${r.protocol === 'any' ? '*' : r.protocol.toUpperCase()}"`,
+        `  source_address_prefix      = "${r.srcCidr === 'any' ? '*' : r.srcCidr}"`,
+        `  destination_address_prefix = "${r.dstCidr === 'any' ? '*' : r.dstCidr}"`,
+        `  destination_port_range     = "${r.dstPort !== undefined ? r.dstPort : '*'}"`,
+        `}`
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (node.vendor === 'gcp-cloud') {
+    const region = node.cloudConfig?.region || 'us-central1';
+    const mode = (node.cloudConfig?.dynamicRoutingMode ?? 'global').toUpperCase();
+    const lines: string[] = [
+      `# Terraform HCL — Google Cloud Router & VPC (${node.hostname})`,
+      `resource "google_compute_router" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+      `  name   = "${node.hostname}"`,
+      `  region = "${region}"`,
+      `  bgp {`,
+      `    asn            = ${node.bgp.enabled ? node.bgp.asn : 64514}`,
+      `    advertise_mode = "${mode}"`,
+      ...(node.cloudConfig?.pgaOnPremAdvertise
+        ? [
+            `    advertised_ip_ranges {`,
+            `      range       = "199.36.153.8/30"`,
+            `      description = "restricted.googleapis.com (Private Google Access)"`,
+            `    }`,
+            `    advertised_ip_ranges {`,
+            `      range       = "199.36.153.4/30"`,
+            `      description = "private.googleapis.com (Private Google Access)"`,
+            `    }`,
+          ]
+        : []),
+      `  }`,
+      `}`,
+      ...(node.cloudConfig?.nccHubEnabled
+        ? [
+            ``,
+            `resource "google_network_connectivity_hub" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_ncc" {`,
+            `  name = "${node.hostname}-ncc-hub"`,
+            `}`,
+          ]
+        : []),
+      ...(node.cloudConfig?.pscEndpoints ?? []).flatMap((ep, idx) => [
+        ``,
+        `resource "google_compute_global_forwarding_rule" "psc_${idx + 1}" {`,
+        `  name       = "psc-endpoint-${idx + 1}"`,
+        `  ip_address = "${ep}"`,
+        `}`,
+      ]),
+    ];
+    for (const sr of node.staticRoutes) {
+      const nhAttr =
+        sr.gcpNextHopType === 'default-internet-gateway'
+          ? `  next_hop_gateway = "default-internet-gateway"`
+          : sr.gcpNextHopType === 'cloud-nat'
+            ? `  next_hop_gateway = "default-internet-gateway" # Cloud NAT`
+            : sr.gcpNextHopType === 'ilb'
+              ? `  next_hop_ilb     = "${sr.nextHop}"`
+              : sr.gcpNextHopType === 'vpn-tunnel'
+                ? `  next_hop_vpn_tunnel = "${sr.interfaceName || 'vpn-tunnel-1'}"`
+                : `  next_hop_ip      = "${sr.nextHop}"`;
+      lines.push(
+        ``,
+        `resource "google_compute_route" "route_${sr.id.replace(/[^a-z0-9_]/gi, '_')}" {`,
+        `  name       = "route-${sr.id}"`,
+        `  dest_range = "${sr.prefix}"`,
+        nhAttr,
+        `  priority   = ${sr.gcpPriority ?? node.cloudConfig?.defaultRoutePriority ?? 1000}`,
+        ...(sr.networkTag ? [`  tags       = ["${sr.networkTag}"]`] : []),
+        `}`
+      );
+    }
+    for (const r of node.aclRules ?? []) {
+      lines.push(
+        ``,
+        `resource "google_compute_firewall" "${r.name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+        `  name          = "${r.name}"`,
+        `  priority      = ${r.seq}`,
+        `  source_ranges = ["${r.srcCidr === 'any' ? '0.0.0.0/0' : r.srcCidr}"]`,
+        ...(r.networkTag ? [`  target_tags   = ["${r.networkTag}"]`] : []),
+        `  ${r.action} {`,
+        `    protocol = "${r.protocol === 'any' ? 'all' : r.protocol}"`,
+        ...(r.dstPort !== undefined ? [`    ports    = ["${r.dstPort}"]`] : []),
+        `  }`,
+        `}`
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (node.vendor === 'oci-cloud') {
+    const region = node.cloudConfig?.region || 'us-ashburn-1';
+    const lines: string[] = [
+      `# Terraform HCL — Oracle Cloud DRG (${node.hostname} | ${region})`,
+      `resource "oci_core_drg" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+      `  display_name = "${node.hostname}"`,
+      `}`,
+    ];
+    for (const sr of node.staticRoutes) {
+      lines.push(
+        ``,
+        `resource "oci_core_drg_route_rule" "rule_${sr.id.replace(/[^a-z0-9_]/gi, '_')}" {`,
+        `  destination      = "${sr.prefix}"`,
+        `  destination_type = "CIDR_BLOCK"`,
+        `  next_hop         = "${sr.nextHop}"`,
+        `}`
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (node.vendor === 'cloudflare-mwan') {
+    const lines: string[] = [
+      `# Terraform HCL — Cloudflare Magic WAN (${node.hostname})`,
+      `resource "cloudflare_magic_transit_site" "${node.hostname.toLowerCase().replace(/[^a-z0-9_]/g, '_')}" {`,
+      `  name = "${node.hostname}"`,
+      `  asn  = ${node.bgp.enabled ? node.bgp.asn : 13335}`,
+      `}`,
+    ];
+    for (const iface of node.interfaces) {
+      lines.push(
+        ``,
+        `# Tunnel ${iface.name} (${iface.vrf || 'default'}) — ${iface.cidr}`
+      );
+    }
+    for (const sr of node.staticRoutes) {
+      lines.push(
+        ``,
+        `resource "cloudflare_magic_wan_static_route" "route_${sr.id.replace(/[^a-z0-9_]/gi, '_')}" {`,
+        `  prefix   = "${sr.prefix}"`,
+        `  nexthop  = "${sr.nextHop}"`,
+        `  priority = 100`,
+        `}`
+      );
+    }
+    return lines.join('\n');
+  }
+
   if (node.vendor === 'cisco-sdwan') {
     const sw = node.sdwan;
     const lines: string[] = [
@@ -798,8 +1220,14 @@ export function formatRunningConfig(node: NodeConfig): string {
       }
     }
     for (const acl of node.aclRules ?? []) {
+      const svc =
+        acl.protocol === 'any'
+          ? 'any'
+          : acl.dstPort !== undefined
+            ? `${acl.protocol}-${acl.dstPort}`
+            : acl.protocol;
       lines.push(
-        `set rulebase security rules ${acl.name} from any to any source ${acl.srcCidr} destination ${acl.dstCidr} action ${acl.action}`
+        `set rulebase security rules ${acl.name} from ${acl.srcZone || 'any'} to ${acl.dstZone || 'any'} source ${acl.srcCidr} destination ${acl.dstCidr} service ${svc} action ${acl.action}`
       );
     }
     if (node.panHa?.enabled) {
