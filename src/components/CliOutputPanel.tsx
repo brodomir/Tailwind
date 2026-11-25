@@ -183,6 +183,7 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       }
       applyParsedNodeConfig(node.id, parsed.nodes[0]);
       setConfigDirty(false);
+      setDraftConfig(formattedConfig);
       setConfigSaved(true);
       window.setTimeout(() => setConfigSaved(false), 1800);
     } catch (err) {

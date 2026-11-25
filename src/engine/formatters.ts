@@ -626,8 +626,8 @@ function formatJunosFibCli(node: NodeConfig, result: NodeRoutingResult): string 
       const dest = `${f.prefix}/${f.prefixLen}`.padEnd(18, ' ');
       const rtype = (f.protocol === 'connected' || f.protocol === 'local' ? 'intf' : 'user').padEnd(4, ' ');
       const nh = (f.nextHop === '0.0.0.0' || f.nextHop === '::' ? '' : f.nextHop).padEnd(18, ' ');
-      const nhType = (f.protocol === 'connected' || f.protocol === 'local' ? 'rslv' : 'ucst').padEnd(8, ' ');
-      lines.push(`${dest} ${rtype}     0 ${nh} ${nhType} 512      1 ${f.egressInterface || 'lo0.0'}`);
+      const nhType = (f.protocol === 'connected' || f.protocol === 'local' ? 'rslv' : 'ucst').padEnd(4, ' ');
+      lines.push(`${dest} ${rtype}     0 ${nh} ${nhType} 512      1     ${f.egressInterface || 'lo0.0'}`);
     }
     lines.push('');
   }
@@ -1186,7 +1186,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       `set deviceconfig system hostname ${node.hostname}`,
     ];
     for (const iface of node.interfaces) {
-      lines.push(`set network interface ethernet ${iface.name} layer3 ip ${iface.cidr}`);
+      if (iface.cidr) {
+        lines.push(`set network interface ethernet ${iface.name} layer3 ip ${iface.cidr}`);
+      }
       const vr = iface.vrf || 'default';
       lines.push(`set network virtual-router ${vr} interface ${iface.name}`);
     }
@@ -1226,8 +1228,9 @@ export function formatRunningConfig(node: NodeConfig): string {
           : acl.dstPort !== undefined
             ? `${acl.protocol}-${acl.dstPort}`
             : acl.protocol;
+      const ruleName = /\s/.test(acl.name) ? `"${acl.name}"` : acl.name;
       lines.push(
-        `set rulebase security rules ${acl.name} from ${acl.srcZone || 'any'} to ${acl.dstZone || 'any'} source ${acl.srcCidr} destination ${acl.dstCidr} service ${svc} action ${acl.action}`
+        `set rulebase security rules ${ruleName} from ${acl.srcZone || 'any'} to ${acl.dstZone || 'any'} source ${acl.srcCidr} destination ${acl.dstCidr} service ${svc} action ${acl.action}`
       );
     }
     if (node.panHa?.enabled) {
@@ -1345,17 +1348,21 @@ export function formatRunningConfig(node: NodeConfig): string {
       `set routing-options router-id ${node.routerId}`,
     ];
     for (const iface of node.interfaces) {
-      lines.push(`set interfaces ${iface.name} unit 0 family inet address ${iface.cidr}`);
-      if (iface.cidr6) lines.push(`set interfaces ${iface.name} unit 0 family inet6 address ${iface.cidr6}`);
+      const unitM = iface.name.match(/^(.+)\.(\d+)$/);
+      const baseIf = unitM ? unitM[1] : iface.name;
+      const unitNum = unitM ? unitM[2] : '0';
+      const fullIf = `${baseIf}.${unitNum}`;
+      if (iface.cidr) lines.push(`set interfaces ${baseIf} unit ${unitNum} family inet address ${iface.cidr}`);
+      if (iface.cidr6) lines.push(`set interfaces ${baseIf} unit ${unitNum} family inet6 address ${iface.cidr6}`);
       if (iface.vrf && iface.vrf !== 'default') {
         lines.push(`set routing-instances ${iface.vrf} instance-type virtual-router`);
-        lines.push(`set routing-instances ${iface.vrf} interface ${iface.name}.0`);
+        lines.push(`set routing-instances ${iface.vrf} interface ${fullIf}`);
       }
       if (node.ospf.enabled && iface.ospfArea !== undefined) {
-        lines.push(`set protocols ospf area 0.0.0.${iface.ospfArea} interface ${iface.name}.0${iface.passive ? ' passive' : ''}`);
+        lines.push(`set protocols ospf area 0.0.0.${iface.ospfArea} interface ${fullIf}${iface.passive ? ' passive' : ''}`);
       }
       if (node.isis?.enabled && iface.isisLevel) {
-        lines.push(`set protocols isis interface ${iface.name}.0${iface.passive ? ' passive' : ''}`);
+        lines.push(`set protocols isis interface ${fullIf}${iface.passive ? ' passive' : ''}`);
       }
     }
     for (const sr of node.staticRoutes) {
@@ -1381,7 +1388,7 @@ export function formatRunningConfig(node: NodeConfig): string {
       lines.push(`/ip vrf add name=${vrf}${vrfIfs ? ` interfaces=${vrfIfs}` : ''}`);
     }
     for (const iface of node.interfaces) {
-      lines.push(`/ip address add address=${iface.cidr} interface=${iface.name}`);
+      if (iface.cidr) lines.push(`/ip address add address=${iface.cidr} interface=${iface.name}`);
       if (iface.cidr6) lines.push(`/ipv6 address add address=${iface.cidr6} interface=${iface.name}`);
     }
     for (const sr of node.staticRoutes) {
@@ -1430,6 +1437,7 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`    edit ${idx + 1}`);
         lines.push(`        set dst ${sr.prefix}`);
         lines.push(`        set gateway ${sr.nextHop}`);
+        if (sr.ad !== undefined) lines.push(`        set distance ${sr.ad}`);
         lines.push(`    next`);
       });
       lines.push(`end`);
@@ -1550,7 +1558,7 @@ export function formatRunningConfig(node: NodeConfig): string {
 
   if (node.vendor === 'arista-eos' && node.mlag?.enabled) {
     const plName = node.interfaces.find((i) => i.id === node.mlag?.peerLinkInterfaceId)?.name;
-    lines.push(`mlag configuration`, ` domain-id ${node.mlag.domainId}`);
+    lines.push(`mlag configuration`, ` domain-id ${node.mlag.domainId || 'MLAG'}`);
     if (node.mlag.localInterface) lines.push(` local-interface ${node.mlag.localInterface}`);
     if (node.mlag.peerAddress) lines.push(` peer-address ${node.mlag.peerAddress}`);
     if (plName) lines.push(` peer-link ${plName}`);
@@ -1589,6 +1597,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       );
     } else if (iface.cidr.includes(':')) {
       lines.push(` ipv6 address ${iface.cidr}`);
+    }
+    if (iface.cidr6) {
+      lines.push(` ipv6 address ${iface.cidr6}`);
     }
     for (const sec of iface.secondaryCidrs ?? []) {
       const sp = parseCidr(sec);
@@ -1773,10 +1784,12 @@ export function formatRunningConfig(node: NodeConfig): string {
     if (node.ospf.bfd) {
       lines.push(` bfd all-interfaces`);
     }
-    for (const iface of node.interfaces.filter((i) => i.passive && i.ospfArea !== undefined)) {
+    for (const iface of node.interfaces.filter(
+      (i) => (i.vrf || 'default') === 'default' && i.passive && i.ospfArea !== undefined
+    )) {
       lines.push(` passive-interface ${iface.name}`);
     }
-    for (const net of node.ospf.networks) {
+    for (const net of node.ospf.networks.filter((n) => (n.vrf || 'default') === 'default')) {
       const parsed = parseCidr(net.prefix);
       if (parsed) {
         const wildcard = uint32ToIp((~parsed.maskUint32) >>> 0);
@@ -1926,7 +1939,7 @@ export function formatRunningConfig(node: NodeConfig): string {
       }
       for (const eid of node.lisp.eidPrefixes) {
         lines.push(
-          `   database-mapping ${eid.prefix} ${node.lisp.rlocIp} priority ${eid.priority ?? 1} weight ${eid.weight ?? 100}`
+          `   database-mapping ${eid.prefix} ${node.lisp.rlocIp || node.routerId} priority ${eid.priority ?? 1} weight ${eid.weight ?? 100}`
         );
       }
     } else {
@@ -1939,7 +1952,7 @@ export function formatRunningConfig(node: NodeConfig): string {
   if (node.evpn?.enabled) {
     lines.push(`! VXLAN / BGP EVPN`);
     lines.push(`interface nve1`);
-    lines.push(` source-interface ${node.evpn.vtepIp}`);
+    lines.push(` source-interface ${node.evpn.vtepIp || node.routerId}`);
     if (node.evpn.l3Vni) lines.push(` member vni ${node.evpn.l3Vni} associate-vrf`);
     if (node.evpn.l2Vni) lines.push(` member vni ${node.evpn.l2Vni}`);
     lines.push(`!`);

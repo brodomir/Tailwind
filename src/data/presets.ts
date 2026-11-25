@@ -630,11 +630,6 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
     description:
       'HQ NGFW peering over MPLS WAN to GCP VPC and over Internet IPsec IKEv2 tunnel to Azure VNet.',
     topology: {
-      roaTable: [
-        { id: 'gm-roa-1', prefix: '10.50.0.0/16', maxLength: 24, originAsn: 65700 },
-        { id: 'gm-roa-2', prefix: '10.10.0.0/16', maxLength: 24, originAsn: 65100 },
-        { id: 'gm-roa-3', prefix: '10.50.10.0/24', maxLength: 24, originAsn: 65701 },
-      ],
       nodes: [
         {
           id: 'hc-fw',
@@ -1553,7 +1548,7 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
           routeMaps: [],
           vrfLeaks: [{ id: 'shvl-1', fromVrf: 'corp', toVrf: 'default' }],
           fhrpGroups: [
-            { id: 'shf-2', protocol: 'hsrp', groupId: 1, interfaceId: 'sh-ios2-g0', virtualIp: '10.40.1.254', priority: 90 },
+            { id: 'shf-2', protocol: 'hsrp', groupId: 1, interfaceId: 'sh-ios2-g1', virtualIp: '10.50.1.254', priority: 90 },
           ],
         },
         {
@@ -2201,7 +2196,7 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
           adOverrides: {},
           interfaces: [
             { id: 'uk-sd1-ge0', name: 'ge0/0', cidr: '10.250.4.2/30', vrf: 'default', tlocColor: 'mpls', tlocEncap: 'ipsec' },
-            { id: 'uk-sd1-ge1', name: 'ge0/1', cidr: '10.40.10.1/30', vrf: 'default' },
+            { id: 'uk-sd1-ge1', name: 'ge0/1', cidr: '10.40.10.1/30', vrf: 'default', tlocExtension: 'ge0/0' },
             { id: 'uk-sd1-ge2', name: 'ge0/2', cidr: '10.40.20.1/30', vrf: 'default' },
           ],
           staticRoutes: [],
@@ -2228,7 +2223,7 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
           vrfs: ['default'],
           adOverrides: {},
           interfaces: [
-            { id: 'uk-sd2-ge0', name: 'eth1', cidr: '10.40.10.2/30', vrf: 'default', tlocExtension: 'ge0/0' },
+            { id: 'uk-sd2-ge0', name: 'eth1', cidr: '10.40.10.2/30', vrf: 'default' },
             { id: 'uk-sd2-lan', name: 'eth2', cidr: '10.40.2.1/24', vrf: 'default' },
           ],
           staticRoutes: [],

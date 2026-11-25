@@ -319,8 +319,18 @@ function parsePanOsSetConfig(lines: string[]): NodeConfig {
       continue;
     }
 
+    const bgpRidMatch = line.match(
+      /^set\s+network\s+virtual-router\s+"?([^"\s]+)"?\s+protocol\s+bgp\s+.*router-id\s+(\d+\.\d+\.\d+\.\d+)/i
+    );
+    if (bgpRidMatch) {
+      vrfs.add(bgpRidMatch[1]);
+      bgpEnabled = true;
+      routerId = bgpRidMatch[2];
+      continue;
+    }
+
     const bgpMatch = line.match(
-      /^set\s+network\s+virtual-router\s+(\S+)\s+protocol\s+bgp\s+.*local-as\s+(\d+)/
+      /^set\s+network\s+virtual-router\s+"?([^"\s]+)"?\s+protocol\s+bgp\s+.*local-as\s+(\d+)/i
     );
     if (bgpMatch) {
       vrfs.add(bgpMatch[1]);
@@ -330,24 +340,45 @@ function parsePanOsSetConfig(lines: string[]): NodeConfig {
     }
 
     const bgpPeerMatch = line.match(
-      /^set\s+network\s+virtual-router\s+\S+\s+protocol\s+bgp\s+peer-group\s+(\S+)\s+peer\s+(\S+)\s+peer-address\s+ip\s+(\d+\.\d+\.\d+\.\d+)/
+      /^set\s+network\s+virtual-router\s+\S+\s+protocol\s+bgp\s+peer-group\s+"?([^"\s]+)"?\s+peer\s+"?([^"\s]+)"?\s+peer-address\s+ip\s+(\d+\.\d+\.\d+\.\d+)/i
     );
     if (bgpPeerMatch) {
       bgpEnabled = true;
-      bgpPeers.push({
-        id: `peer-${Date.now()}-${bgpPeers.length}`,
-        peerIp: bgpPeerMatch[3],
-        remoteAs: bgpAsn,
-      });
+      const peerKey = `${bgpPeerMatch[1]}|${bgpPeerMatch[2]}`;
+      const existing = bgpPeers.find((p) => p.id === peerKey);
+      if (existing) {
+        existing.peerIp = bgpPeerMatch[3];
+      } else {
+        bgpPeers.push({
+          id: peerKey,
+          peerIp: bgpPeerMatch[3],
+          remoteAs: bgpAsn,
+        });
+      }
       continue;
     }
 
     const bgpPeerAsMatch = line.match(
-      /^set\s+network\s+virtual-router\s+\S+\s+protocol\s+bgp\s+peer-group\s+\S+\s+peer\s+\S+\s+peer-as\s+(\d+)/
+      /^set\s+network\s+virtual-router\s+\S+\s+protocol\s+bgp\s+peer-group\s+"?([^"\s]+)"?\s+peer\s+"?([^"\s]+)"?\s+peer-as\s+(\d+)/i
     );
-    if (bgpPeerAsMatch && bgpPeers.length > 0) {
-      bgpPeers[bgpPeers.length - 1].remoteAs = Number(bgpPeerAsMatch[1]);
+    if (bgpPeerAsMatch) {
+      bgpEnabled = true;
+      const peerKey = `${bgpPeerAsMatch[1]}|${bgpPeerAsMatch[2]}`;
+      const existing = bgpPeers.find((p) => p.id === peerKey);
+      if (existing) {
+        existing.remoteAs = Number(bgpPeerAsMatch[3]);
+      } else {
+        bgpPeers.push({
+          id: peerKey,
+          peerIp: '',
+          remoteAs: Number(bgpPeerAsMatch[3]),
+        });
+      }
     }
+  }
+  for (let i = bgpPeers.length - 1; i >= 0; i--) {
+    if (!bgpPeers[i].peerIp) bgpPeers.splice(i, 1);
+    else bgpPeers[i].id = `peer-${Date.now()}-${i}`;
   }
 
   const interfaces: NodeConfig['interfaces'] = Array.from(ifaceMap.entries()).map(
@@ -458,6 +489,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     | 'rip'
     | 'routemap'
     | 'vpc'
+    | 'mlag'
     | 'lisp' = 'none';
   let currentVrfContext = 'default';
   let currentOspfVrf = 'default';
@@ -473,7 +505,12 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
   const lispEidPrefixes: NonNullable<NodeConfig['lisp']>['eidPrefixes'] = [];
   let currentIface: NodeConfig['interfaces'][0] | null = null;
   let currentRouteMapEntry: NodeConfig['routeMaps'][0]['entries'][0] | null = null;
+  const prefixLists: NodeConfig['prefixLists'] = [];
+  const pendingPeerRouteMaps: { peer: BgpPeerConfig; name: string; dir: 'in' | 'out' }[] = [];
+  const pendingRouteMapPrefixLists: { entry: NodeConfig['routeMaps'][0]['entries'][0]; name: string }[] = [];
   let vpcConfig: NodeConfig['vpc'] | undefined;
+  let mlagConfig: NodeConfig['mlag'] | undefined;
+  let pendingMlagPeerLinkName: string | undefined;
 
   for (const rawLine of lines) {
     const trimmed = rawLine.trim();
@@ -923,6 +960,11 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         currentIface.vpcId = Number(vpcIfMatch[1]);
         continue;
       }
+      const mlagIfMatch = trimmed.match(/^mlag\s+(\d+)$/i);
+      if (mlagIfMatch) {
+        currentIface.mlagId = Number(mlagIfMatch[1]);
+        continue;
+      }
     }
 
     const vpcDomMatch = trimmed.match(/^vpc\s+domain\s+(\d+)/i);
@@ -953,6 +995,46 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       if (dr) { vpcConfig.delayRestore = Number(dr[1]); continue; }
     }
 
+    if (/^mlag\s+configuration$/i.test(trimmed)) {
+      currentSection = 'mlag';
+      mlagConfig = mlagConfig ?? { enabled: true, domainId: 'MLAG' };
+      mlagConfig.enabled = true;
+      continue;
+    }
+
+    if (currentSection === 'mlag' && mlagConfig) {
+      const domM = trimmed.match(/^domain-id\s+(\S+)/i);
+      if (domM) { mlagConfig.domainId = domM[1]; continue; }
+      const liM = trimmed.match(/^local-interface\s+(\S+)/i);
+      if (liM) { mlagConfig.localInterface = liM[1]; continue; }
+      const paM = trimmed.match(/^peer-address\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (paM) { mlagConfig.peerAddress = paM[1]; continue; }
+      const plM = trimmed.match(/^peer-link\s+(\S+)/i);
+      if (plM) { pendingMlagPeerLinkName = plM[1]; continue; }
+      const rdM = trimmed.match(/^reload-delay(?:\s+\S+)?\s+(\d+)/i);
+      if (rdM) { mlagConfig.reloadDelay = Number(rdM[1]); continue; }
+    }
+
+    const plGlobalMatch = trimmed.match(
+      /^ip\s+prefix-list\s+(\S+)(?:\s+seq\s+(\d+))?\s+(permit|deny)\s+(\d+\.\d+\.\d+\.\d+\/\d+)(?:\s+ge\s+(\d+))?(?:\s+le\s+(\d+))?/i
+    );
+    if (plGlobalMatch) {
+      let pl = prefixLists.find((p) => p.name === plGlobalMatch[1]);
+      if (!pl) {
+        pl = { id: `pl-${Date.now()}-${prefixLists.length}`, name: plGlobalMatch[1], entries: [] };
+        prefixLists.push(pl);
+      }
+      pl.entries.push({
+        id: `ple-${Date.now()}-${pl.entries.length}`,
+        seq: plGlobalMatch[2] ? Number(plGlobalMatch[2]) : (pl.entries.length + 1) * 10,
+        action: plGlobalMatch[3].toLowerCase() as 'permit' | 'deny',
+        prefix: plGlobalMatch[4],
+        ...(plGlobalMatch[5] ? { ge: Number(plGlobalMatch[5]) } : {}),
+        ...(plGlobalMatch[6] ? { le: Number(plGlobalMatch[6]) } : {}),
+      });
+      continue;
+    }
+
     const rmMatch = trimmed.match(/^route-map\s+(\S+)\s+(permit|deny)\s+(\d+)/i);
     if (rmMatch) {
       currentSection = 'routemap';
@@ -972,18 +1054,30 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     }
 
     if (currentSection === 'routemap' && currentRouteMapEntry) {
+      const mpl = trimmed.match(/^match\s+ip\s+address\s+prefix-list\s+(\S+)/i);
+      if (mpl) { pendingRouteMapPrefixLists.push({ entry: currentRouteMapEntry, name: mpl[1] }); continue; }
       const mc = trimmed.match(/^match\s+community\s+(\S+)/i);
       if (mc) { currentRouteMapEntry.matchCommunity = mc[1]; continue; }
       const ma = trimmed.match(/^match\s+as-path\s+(.+)/i);
       if (ma) { currentRouteMapEntry.matchAsPathRegex = ma[1].trim(); continue; }
       const mt = trimmed.match(/^match\s+tag\s+(\d+)/i);
       if (mt) { currentRouteMapEntry.matchTag = Number(mt[1]); continue; }
-      const sc = trimmed.match(/^set\s+community\s+(\S+)/i);
-      if (sc) { currentRouteMapEntry.set.setCommunity = sc[1]; continue; }
+      const sc = trimmed.match(/^set\s+community\s+(.+)/i);
+      if (sc) { currentRouteMapEntry.set.setCommunity = sc[1].trim(); continue; }
       const st = trimmed.match(/^set\s+tag\s+(\d+)/i);
       if (st) { currentRouteMapEntry.set.setTag = Number(st[1]); continue; }
       const slp = trimmed.match(/^set\s+local-preference\s+(\d+)/i);
       if (slp) { currentRouteMapEntry.set.setLocalPref = Number(slp[1]); continue; }
+      const smed = trimmed.match(/^set\s+metric\s+(\d+)/i);
+      if (smed) { currentRouteMapEntry.set.setMed = Number(smed[1]); continue; }
+      const sasp = trimmed.match(/^set\s+as-path\s+prepend\s+(.+)/i);
+      if (sasp) {
+        const asns = sasp[1].trim().split(/\s+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+        if (asns.length) currentRouteMapEntry.set.prependAsPath = asns;
+        continue;
+      }
+      const sad = trimmed.match(/^set\s+distance\s+(\d+)/i);
+      if (sad) { currentRouteMapEntry.set.setAd = Number(sad[1]); continue; }
     }
 
     if (
@@ -1435,10 +1529,12 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       const rmNbrMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+route-map\s+(\S+)\s+(in|out)$/i);
       if (rmNbrMatch) {
         const peer = findBgpPeer(rmNbrMatch[1]);
-        const rm = routeMaps.find((m) => m.name === rmNbrMatch[2]);
-        if (peer && rm) {
-          if (rmNbrMatch[3].toLowerCase() === 'in') peer.routeMapInId = rm.id;
-          else peer.routeMapOutId = rm.id;
+        if (peer) {
+          pendingPeerRouteMaps.push({
+            peer,
+            name: rmNbrMatch[2],
+            dir: rmNbrMatch[3].toLowerCase() as 'in' | 'out',
+          });
         }
         continue;
       }
@@ -1471,25 +1567,25 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       const shutNbrMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+shutdown$/i);
       if (shutNbrMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === shutNbrMatch[1]);
+        const peer = findBgpPeer(shutNbrMatch[1]);
         if (peer) peer.shutdown = true;
         continue;
       }
       const updSrcMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+update-source\s+(\S+)/i);
       if (updSrcMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === updSrcMatch[1]);
+        const peer = findBgpPeer(updSrcMatch[1]);
         if (peer) peer.updateSource = updSrcMatch[2];
         continue;
       }
       const allowAsMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+allowas-in/i);
       if (allowAsMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === allowAsMatch[1]);
+        const peer = findBgpPeer(allowAsMatch[1]);
         if (peer) peer.allowAsIn = true;
         continue;
       }
       const asOvMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+as-override/i);
       if (asOvMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === asOvMatch[1]);
+        const peer = findBgpPeer(asOvMatch[1]);
         if (peer) peer.asOverride = true;
         continue;
       }
@@ -1497,7 +1593,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         /^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+send-community(?:\s+(standard|extended|both))?/i
       );
       if (sendCommMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === sendCommMatch[1]);
+        const peer = findBgpPeer(sendCommMatch[1]);
         if (peer) {
           peer.sendCommunity =
             (sendCommMatch[2]?.toLowerCase() as 'standard' | 'extended' | 'both') ?? 'standard';
@@ -1506,19 +1602,19 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       const remPrivMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+remove-private-as/i);
       if (remPrivMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === remPrivMatch[1]);
+        const peer = findBgpPeer(remPrivMatch[1]);
         if (peer) peer.removePrivateAs = true;
         continue;
       }
       const maxPrefMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+maximum-prefix\s+(\d+)/i);
       if (maxPrefMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === maxPrefMatch[1]);
+        const peer = findBgpPeer(maxPrefMatch[1]);
         if (peer) peer.maxPrefixes = Number(maxPrefMatch[2]);
         continue;
       }
       const localAsMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+local-as\s+(\d+)(\s+no-prepend)?(\s+replace-as)?/i);
       if (localAsMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === localAsMatch[1]);
+        const peer = findBgpPeer(localAsMatch[1]);
         if (peer) {
           peer.localAs = Number(localAsMatch[2]);
           if (localAsMatch[3]) peer.localAsNoPrepend = true;
@@ -1528,13 +1624,13 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       const addPathMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+add-path\s+(send|receive|both)/i);
       if (addPathMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === addPathMatch[1]);
+        const peer = findBgpPeer(addPathMatch[1]);
         if (peer) peer.addPath = addPathMatch[2].toLowerCase() as 'send' | 'receive' | 'both';
         continue;
       }
       const dccMatch = trimmed.match(/^neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+disable-connected-check/i);
       if (dccMatch) {
-        const peer = bgpPeers.find((p) => p.peerIp === dccMatch[1]);
+        const peer = findBgpPeer(dccMatch[1]);
         if (peer) peer.disableConnectedCheck = true;
         continue;
       }
@@ -1611,6 +1707,15 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       multicastConfig = { ...multicastConfig, pimEnabled: true, rpAddress: pimRpMatch[1] };
       continue;
     }
+    const ptpMatch = trimmed.match(/^ptp\s+mode\s+(boundary|grandmaster|transparent)(?:\s+domain\s+(\d+))?/i);
+    if (ptpMatch) {
+      timingConfig = {
+        ...timingConfig,
+        ptpMode: ptpMatch[1].toLowerCase() as 'boundary' | 'grandmaster' | 'transparent',
+        ...(ptpMatch[2] ? { ptpDomain: Number(ptpMatch[2]) } : {}),
+      };
+      continue;
+    }
     const ntpMatch = trimmed.match(/^ntp\s+server\s+(\d+\.\d+\.\d+\.\d+)/i);
     if (ntpMatch) {
       timingConfig = { ...timingConfig, ntpServer: ntpMatch[1] };
@@ -1627,46 +1732,72 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       continue;
     }
 
+    const parseStaticTail = (tail: string) => {
+      const trackM = tail.match(/\btrack\s+(\S+)/i);
+      const tagM = tail.match(/\btag\s+(\d+)/i);
+      const stripped = tail
+        .replace(/\btrack\s+\S+/gi, '')
+        .replace(/\btag\s+\d+/gi, '')
+        .replace(/\bglobal\b/gi, '')
+        .trim();
+      const adM = stripped.match(/^(\d+)\b/);
+      return {
+        ad: adM ? Number(adM[1]) : undefined,
+        trackId: trackM ? trackM[1] : undefined,
+        tag: tagM ? Number(tagM[1]) : undefined,
+      };
+    };
+
     const staticVrfMatch = trimmed.match(
-      /^ip\s+route\s+vrf\s+(\S+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)(\s+global)?(?:\s+(\d+))?/i
+      /^ip\s+route\s+vrf\s+(\S+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)(.*)$/i
     );
     if (staticVrfMatch) {
       vrfs.add(staticVrfMatch[1]);
+      const tail = staticVrfMatch[5] ?? '';
+      const opts = parseStaticTail(tail);
       staticRoutes.push({
         id: `sr-${Date.now()}-${staticRoutes.length}`,
         vrf: staticVrfMatch[1],
         prefix: `${staticVrfMatch[2]}/${maskToPrefixLen(staticVrfMatch[3])}`,
         nextHop: staticVrfMatch[4],
-        globalNextHop: Boolean(staticVrfMatch[5]),
-        ad: staticVrfMatch[6] ? Number(staticVrfMatch[6]) : undefined,
+        globalNextHop: /\bglobal\b/i.test(tail) || undefined,
+        ad: opts.ad,
+        trackId: opts.trackId,
+        tag: opts.tag,
       });
       continue;
     }
 
     const staticCidrMatch = trimmed.match(
-      /^ip\s+route\s+(\d+\.\d+\.\d+\.\d+\/\d+)\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+))?/i
+      /^ip\s+route\s+(\d+\.\d+\.\d+\.\d+\/\d+)\s+(\d+\.\d+\.\d+\.\d+)(.*)$/i
     );
     if (staticCidrMatch) {
+      const opts = parseStaticTail(staticCidrMatch[3] ?? '');
       staticRoutes.push({
         id: `sr-${Date.now()}-${staticRoutes.length}`,
         vrf: 'default',
         prefix: staticCidrMatch[1],
         nextHop: staticCidrMatch[2],
-        ad: staticCidrMatch[3] ? Number(staticCidrMatch[3]) : undefined,
+        ad: opts.ad,
+        trackId: opts.trackId,
+        tag: opts.tag,
       });
       continue;
     }
 
     const staticMatch = trimmed.match(
-      /^ip\s+route\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+))?/i
+      /^ip\s+route\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)(.*)$/i
     );
     if (staticMatch) {
+      const opts = parseStaticTail(staticMatch[4] ?? '');
       staticRoutes.push({
         id: `sr-${Date.now()}-${staticRoutes.length}`,
         vrf: 'default',
         prefix: `${staticMatch[1]}/${maskToPrefixLen(staticMatch[2])}`,
         nextHop: staticMatch[3],
-        ad: staticMatch[4] ? Number(staticMatch[4]) : undefined,
+        ad: opts.ad,
+        trackId: opts.trackId,
+        tag: opts.tag,
       });
       continue;
     }
@@ -1701,6 +1832,24 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     }
   }
 
+  for (const pending of pendingPeerRouteMaps) {
+    const rm = routeMaps.find((m) => m.name === pending.name);
+    if (rm) {
+      if (pending.dir === 'in') pending.peer.routeMapInId = rm.id;
+      else pending.peer.routeMapOutId = rm.id;
+    }
+  }
+  for (const pendingPl of pendingRouteMapPrefixLists) {
+    const pl = prefixLists.find((p) => p.name === pendingPl.name);
+    if (pl) pendingPl.entry.matchPrefixListId = pl.id;
+  }
+  if (mlagConfig && pendingMlagPeerLinkName) {
+    const plIface = interfaces.find(
+      (i) => i.name.toLowerCase() === pendingMlagPeerLinkName!.toLowerCase()
+    );
+    if (plIface) mlagConfig.peerLinkInterfaceId = plIface.id;
+  }
+
   const validInterfaces = interfaces
     .filter(
       (i) =>
@@ -1708,6 +1857,10 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
         Boolean(i.cidr6) ||
         Boolean(i.unnumberedSource) ||
         i.lacpGroup !== undefined ||
+        i.mlagId !== undefined ||
+        i.vpcId !== undefined ||
+        i.id === vpcConfig?.peerLinkInterfaceId ||
+        i.id === mlagConfig?.peerLinkInterfaceId ||
         interfaces.some((sub) => sub.parentInterface?.toLowerCase() === i.name.toLowerCase())
     )
     .map((i) => (i.cidr === '0.0.0.0/0' ? { ...i, cidr: '' } : i));
@@ -1720,13 +1873,23 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     });
   }
 
-  const isForcepoint = lines.some((l) => /forcepoint|frr|vtysh/i.test(l));
+  const isForcepoint = lines.some((l) => /forcepoint|stonegate|\bvtysh\b|frr\s+version/i.test(l));
+  const detectedArista =
+    Boolean(mlagConfig) ||
+    interfaces.some((i) => i.mlagId !== undefined) ||
+    lines.some((l) => /^mlag\s+configuration\b|arista|\beos\b/i.test(l.trim()));
   const detectedNxOs = isNxOs || Boolean(vpcConfig) || lines.some((l) => /feature\s+vpc|nx-os|n9k/i.test(l));
 
   return {
     id: `imp-${Date.now()}-${++importIdSeq}`,
     hostname,
-    vendor: isForcepoint ? 'forcepoint-ngfw' : detectedNxOs ? 'cisco-nx-os' : 'cisco-ios-xe',
+    vendor: isForcepoint
+      ? 'forcepoint-ngfw'
+      : detectedArista
+        ? 'arista-eos'
+        : detectedNxOs
+          ? 'cisco-nx-os'
+          : 'cisco-ios-xe',
     routerId,
     vrfRouterIds: Object.keys(vrfRouterIds).length ? vrfRouterIds : undefined,
     position: { x: 240, y: 140 },
@@ -1778,7 +1941,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
       }
       : undefined,
     redistributions,
-    prefixLists: [],
+    prefixLists,
     routeMaps,
     vrfLeaks,
     tracks: tracks.length ? tracks : undefined,
@@ -1791,6 +1954,7 @@ function parseCiscoStyleConfig(lines: string[]): NodeConfig {
     evpn: evpnConfig,
     fhrpGroups: fhrpGroups.length ? fhrpGroups : undefined,
     vpc: vpcConfig,
+    mlag: mlagConfig,
   };
 }
 
@@ -1801,6 +1965,7 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
   const interfaces: InterfaceConfig[] = [];
   const staticRoutes: StaticRouteConfig[] = [];
   const pbrRules: NonNullable<NodeConfig['pbrRules']> = [];
+  const pendingPassiveIfs = new Set<string>();
   let ospfEnabled = false;
   let ospfRouterId = '';
   let ripEnabled = false;
@@ -1836,6 +2001,7 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
           vrf: 'default',
           prefix: curStatic.prefix,
           nextHop: curStatic.nextHop,
+          ...(curStatic.ad !== undefined ? { ad: curStatic.ad } : {}),
         });
       }
       if (subBlock === 'neighbor' && curPeer?.peerIp && curPeer.remoteAs) {
@@ -1875,6 +2041,7 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
       else block = '';
       continue;
     }
+    if (nestedUnknownDepth > 0) continue;
     if (/^next$/i.test(t)) {
       flushFortiEntry();
       continue;
@@ -1913,6 +2080,8 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
       if (dmMask) curStatic.prefix = `${dmMask[1]}/${maskToPrefixLen(dmMask[2])}`;
       const gm = t.match(/^set\s+gateway\s+(\d+\.\d+\.\d+\.\d+)/i);
       if (gm) curStatic.nextHop = gm[1];
+      const distM = t.match(/^set\s+distance\s+(\d+)/i);
+      if (distM) curStatic.ad = Number(distM[1]);
     } else if (block === 'policy' && curPbr) {
       const inM = t.match(/^set\s+input-device\s+"?([^"\s]+)"?/i);
       if (inM) curPbr.ingressInterface = inM[1];
@@ -1943,8 +2112,7 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
         const names = pm[1].match(/"[^"]+"|\S+/g) ?? [];
         for (const rawName of names) {
           const cleanName = rawName.replace(/^"|"$/g, '').trim().toLowerCase();
-          const target = interfaces.find((i) => i.name.toLowerCase() === cleanName);
-          if (target) target.passive = true;
+          if (cleanName) pendingPassiveIfs.add(cleanName);
         }
       }
     } else if (block === 'bgp' && !subBlock) {
@@ -1957,6 +2125,12 @@ function parseFortigateConfig(lines: string[]): NodeConfig {
       if (ram) curPeer.remoteAs = Number(ram[1]);
       if (/^set\s+next-hop-self\s+enable$/i.test(t)) curPeer.nextHopSelf = true;
       if (/^set\s+capability-default-originate\s+enable$/i.test(t)) curPeer.defaultOriginate = true;
+    }
+  }
+
+  for (const iface of interfaces) {
+    if (pendingPassiveIfs.has(iface.name.toLowerCase())) {
+      iface.passive = true;
     }
   }
 
@@ -2036,12 +2210,13 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
     }
 
     const ifV6Match = line.match(
-      /^set\s+interfaces\s+(\S+)\s+unit\s+(\d+)\s+family\s+inet6\s+address\s+([0-9a-fA-F:]+\/\d+)/i
+      /^set\s+interfaces\s+(\S+?)(?:\.(\d+)|\s+unit\s+(\d+))\s+family\s+inet6\s+address\s+([0-9a-fA-F:]+\/\d+)/i
     );
     if (ifV6Match) {
-      const ifName = ifV6Match[2] === '0' ? ifV6Match[1] : `${ifV6Match[1]}.${ifV6Match[2]}`;
+      const unit = ifV6Match[2] ?? ifV6Match[3] ?? '0';
+      const ifName = unit === '0' ? ifV6Match[1] : `${ifV6Match[1]}.${unit}`;
       const cur = ifaceMap.get(ifName) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
-      cur.cidr6 = ifV6Match[3];
+      cur.cidr6 = ifV6Match[4];
       ifaceMap.set(ifName, cur);
       continue;
     }
@@ -2065,9 +2240,13 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
       const areaRaw = ospfIfMatch[1];
       const areaNum = areaRaw.includes('.') ? Number(areaRaw.split('.').pop()) : Number(areaRaw);
       const rawIf = ospfIfMatch[2].replace(/\.0$/, '');
-      const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ospfIfMatch[2]);
-      if (cur && Number.isFinite(areaNum)) cur.ospfArea = areaNum;
-      if (cur && ospfIfMatch[3]) cur.passive = true;
+      let cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ospfIfMatch[2]);
+      if (!cur) {
+        cur = { cidr: '0.0.0.0/0', vrf: 'default' };
+        ifaceMap.set(rawIf, cur);
+      }
+      if (Number.isFinite(areaNum)) cur.ospfArea = areaNum;
+      if (ospfIfMatch[3]) cur.passive = true;
       continue;
     }
 
@@ -2077,11 +2256,13 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
     if (isisIfMatch) {
       isisEnabled = true;
       const rawIf = isisIfMatch[1].replace(/\.0$/, '');
-      const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(isisIfMatch[1]);
-      if (cur) {
-        cur.isisLevel = cur.isisLevel ?? 'L2';
-        if (isisIfMatch[2]) cur.passive = true;
+      let cur = ifaceMap.get(rawIf) ?? ifaceMap.get(isisIfMatch[1]);
+      if (!cur) {
+        cur = { cidr: '0.0.0.0/0', vrf: 'default' };
+        ifaceMap.set(rawIf, cur);
       }
+      cur.isisLevel = cur.isisLevel ?? 'L2';
+      if (isisIfMatch[2]) cur.passive = true;
       continue;
     }
 
@@ -2091,8 +2272,12 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
     if (ripIfMatch) {
       ripEnabled = true;
       const rawIf = ripIfMatch[1].replace(/\.0$/, '');
-      const cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ripIfMatch[1]);
-      if (cur && ripIfMatch[2]) cur.passive = true;
+      let cur = ifaceMap.get(rawIf) ?? ifaceMap.get(ripIfMatch[1]);
+      if (!cur) {
+        cur = { cidr: '0.0.0.0/0', vrf: 'default' };
+        ifaceMap.set(rawIf, cur);
+      }
+      if (ripIfMatch[2]) cur.passive = true;
       continue;
     }
 
@@ -2117,9 +2302,10 @@ function parseJunosSetConfig(lines: string[]): NodeConfig {
     if (bgpPeerMatch) {
       bgpEnabled = true;
       const existing = bgpPeers.find((p) => p.peerIp === bgpPeerMatch[1]);
-      const remoteAs = bgpPeerMatch[2] ? Number(bgpPeerMatch[2]) : bgpAsn;
-      if (existing) existing.remoteAs = remoteAs;
-      else {
+      if (existing) {
+        if (bgpPeerMatch[2]) existing.remoteAs = Number(bgpPeerMatch[2]);
+      } else {
+        const remoteAs = bgpPeerMatch[2] ? Number(bgpPeerMatch[2]) : bgpAsn;
         bgpPeers.push({
           id: `bp-${Date.now()}-${bgpPeers.length}`,
           peerIp: bgpPeerMatch[1],
@@ -2261,16 +2447,21 @@ function parseMikrotikConfig(lines: string[]): NodeConfig {
     if (/^\/routing\s+ospf\s+interface-template\s+add\b/i.test(line)) {
       ospfEnabled = true;
       const areaM = line.match(/area="?([^"\s]+)"?/i);
-      const ifM = line.match(/interfaces=([^\s]+)/i);
+      const ifM = line.match(/interfaces=(?:"([^"]+)"|([^\s]+))/i);
+      const ifRaw = ifM ? (ifM[1] ?? ifM[2]) : undefined;
       const isPassive = /\bpassive=(?:yes|true)\b/i.test(line) || /\bpassive\b(?!\s*=)/i.test(line);
       const areaNum = areaM ? (ospfAreas.get(areaM[1]) ?? (Number(areaM[1]) || 0)) : 0;
-      if (ifM) {
-        for (const ifName of ifM[1].split(',')) {
-          const cur = ifaceMap.get(ifName);
-          if (cur) {
-            cur.ospfArea = areaNum;
-            if (isPassive) cur.passive = true;
+      if (ifRaw) {
+        for (const rawName of ifRaw.split(',')) {
+          const ifName = rawName.trim();
+          if (!ifName) continue;
+          let cur = ifaceMap.get(ifName);
+          if (!cur) {
+            cur = { cidr: '0.0.0.0/0', vrf: 'default' };
+            ifaceMap.set(ifName, cur);
           }
+          cur.ospfArea = areaNum;
+          if (isPassive) cur.passive = true;
         }
       }
       continue;
@@ -2371,8 +2562,9 @@ function parseVyosConfig(lines: string[]): NodeConfig {
     }
     const ifDis = line.match(/^set\s+interfaces\s+\S+\s+(\S+)\s+disable$/i);
     if (ifDis) {
-      const cur = ifaceMap.get(ifDis[1]);
-      if (cur) cur.shutdown = true;
+      const cur = ifaceMap.get(ifDis[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      cur.shutdown = true;
+      ifaceMap.set(ifDis[1], cur);
       continue;
     }
     const srM = line.match(/^set\s+(?:vrf\s+name\s+(\S+)\s+)?protocols\s+static\s+route\s+(\S+)\s+next-hop\s+(\d+\.\d+\.\d+\.\d+)/i);
@@ -2387,16 +2579,18 @@ function parseVyosConfig(lines: string[]): NodeConfig {
     const ospfArea = line.match(/^set\s+protocols\s+ospf\s+interface\s+(\S+)\s+area\s+(\S+)/i);
     if (ospfArea) {
       ospfEnabled = true;
-      const cur = ifaceMap.get(ospfArea[1]);
+      const cur = ifaceMap.get(ospfArea[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
       const aNum = ospfArea[2].includes('.') ? Number(ospfArea[2].split('.').pop()) : Number(ospfArea[2]);
-      if (cur && Number.isFinite(aNum)) cur.ospfArea = aNum;
+      if (Number.isFinite(aNum)) cur.ospfArea = aNum;
+      ifaceMap.set(ospfArea[1], cur);
       continue;
     }
     const ospfPas = line.match(/^set\s+protocols\s+ospf\s+interface\s+(\S+)\s+passive$/i);
     if (ospfPas) {
       ospfEnabled = true;
-      const cur = ifaceMap.get(ospfPas[1]);
-      if (cur) cur.passive = true;
+      const cur = ifaceMap.get(ospfPas[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      cur.passive = true;
+      ifaceMap.set(ospfPas[1], cur);
       continue;
     }
     const isisNetM = line.match(/^set\s+protocols\s+isis\s+net\s+(\S+)/i);
@@ -2404,15 +2598,18 @@ function parseVyosConfig(lines: string[]): NodeConfig {
     const isisIfM = line.match(/^set\s+protocols\s+isis\s+interface\s+(\S+)(?:\s+(passive))?/i);
     if (isisIfM) {
       isisEnabled = true;
-      const cur = ifaceMap.get(isisIfM[1]);
-      if (cur) { cur.isisLevel = cur.isisLevel ?? 'L2'; if (isisIfM[2]) cur.passive = true; }
+      const cur = ifaceMap.get(isisIfM[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      cur.isisLevel = cur.isisLevel ?? 'L2';
+      if (isisIfM[2]) cur.passive = true;
+      ifaceMap.set(isisIfM[1], cur);
       continue;
     }
     const ripPasM = line.match(/^set\s+protocols\s+rip\s+passive-interface\s+(\S+)/i);
     if (ripPasM) {
       ripEnabled = true;
-      const cur = ifaceMap.get(ripPasM[1]);
-      if (cur) cur.passive = true;
+      const cur = ifaceMap.get(ripPasM[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      cur.passive = true;
+      ifaceMap.set(ripPasM[1], cur);
       continue;
     }
     const bgpAsM = line.match(/^set\s+protocols\s+bgp\s+system-as\s+(\d+)/i);
@@ -2422,13 +2619,17 @@ function parseVyosConfig(lines: string[]): NodeConfig {
     const bgpNbrM = line.match(/^set\s+protocols\s+bgp\s+neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+remote-as\s+(\d+)/i);
     if (bgpNbrM) {
       bgpEnabled = true;
-      bgpPeers.push({ id: `bp-${Date.now()}-${bgpPeers.length}`, peerIp: bgpNbrM[1], remoteAs: Number(bgpNbrM[2]) });
+      const existing = bgpPeers.find((x) => x.peerIp === bgpNbrM[1]);
+      if (existing) existing.remoteAs = Number(bgpNbrM[2]);
+      else bgpPeers.push({ id: `bp-${Date.now()}-${bgpPeers.length}`, peerIp: bgpNbrM[1], remoteAs: Number(bgpNbrM[2]) });
       continue;
     }
     const bgpNhsM = line.match(/^set\s+protocols\s+bgp\s+neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+.*nexthop-self/i);
     if (bgpNhsM) {
+      bgpEnabled = true;
       const p = bgpPeers.find((x) => x.peerIp === bgpNhsM[1]);
       if (p) p.nextHopSelf = true;
+      else bgpPeers.push({ id: `bp-${Date.now()}-${bgpPeers.length}`, peerIp: bgpNhsM[1], remoteAs: bgpAsn, nextHopSelf: true });
     }
   }
 
@@ -2491,8 +2692,9 @@ function parseCheckpointGaiaConfig(lines: string[]): NodeConfig {
     }
     const stM = line.match(/^set\s+interface\s+(\S+)\s+state\s+(on|off)/i);
     if (stM) {
-      const cur = ifaceMap.get(stM[1]);
-      if (cur && stM[2].toLowerCase() === 'off') cur.shutdown = true;
+      const cur = ifaceMap.get(stM[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      if (stM[2].toLowerCase() === 'off') cur.shutdown = true;
+      ifaceMap.set(stM[1], cur);
       continue;
     }
     const srM = line.match(/^set\s+static-route\s+(\S+)\s+nexthop\s+gateway\s+address\s+(\d+\.\d+\.\d+\.\d+)/i);
@@ -2503,16 +2705,18 @@ function parseCheckpointGaiaConfig(lines: string[]): NodeConfig {
     const ospfIfM = line.match(/^set\s+ospf\s+instance\s+\S+\s+interface\s+(\S+)\s+area\s+(\S+)/i);
     if (ospfIfM) {
       ospfEnabled = true;
-      const cur = ifaceMap.get(ospfIfM[1]);
+      const cur = ifaceMap.get(ospfIfM[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
       const aNum = ospfIfM[2].includes('.') ? Number(ospfIfM[2].split('.').pop()) : Number(ospfIfM[2]);
-      if (cur && Number.isFinite(aNum)) cur.ospfArea = aNum;
+      if (Number.isFinite(aNum)) cur.ospfArea = aNum;
+      ifaceMap.set(ospfIfM[1], cur);
       continue;
     }
     const ospfPasM = line.match(/^set\s+ospf\s+instance\s+\S+\s+interface\s+(\S+)\s+passive\s+(on|off)/i);
     if (ospfPasM) {
       ospfEnabled = true;
-      const cur = ifaceMap.get(ospfPasM[1]);
-      if (cur) cur.passive = ospfPasM[2].toLowerCase() === 'on';
+      const cur = ifaceMap.get(ospfPasM[1]) ?? { cidr: '0.0.0.0/0', vrf: 'default' };
+      cur.passive = ospfPasM[2].toLowerCase() === 'on';
+      ifaceMap.set(ospfPasM[1], cur);
       continue;
     }
     const asM = line.match(/^set\s+as\s+(\d+)/i);
@@ -2598,6 +2802,7 @@ function parseCloudConfig(lines: string[]): NodeConfig {
   let curGcpNhType: StaticRouteConfig['gcpNextHopType'] | undefined;
   let curGcpPriority: number | undefined;
   let curNetworkTag: string | undefined;
+  let curInterfaceName: string | undefined;
   let curBlackhole = false;
   let curVrf = 'default';
   let curName = '';
@@ -2625,7 +2830,9 @@ function parseCloudConfig(lines: string[]): NodeConfig {
         vrf: curVrf,
       });
     } else if (blockType === 'route' && curCidr) {
-      if (vendor === 'azure-cloud' && curAzureNhType) {
+      if (vendor === 'azure-cloud' && curAzureNhType === 'None' && curName.toLowerCase().startsWith('blackhole')) {
+        blackholeCidrs.push(curCidr);
+      } else if (vendor === 'azure-cloud' && curAzureNhType) {
         staticRoutes.push({
           id: nextImportId('sr'),
           prefix: curCidr,
@@ -2669,6 +2876,7 @@ function parseCloudConfig(lines: string[]): NodeConfig {
           gcpNextHopType: curGcpNhType ?? 'next-hop-address',
           ...(curGcpPriority !== undefined ? { gcpPriority: curGcpPriority } : {}),
           ...(curNetworkTag ? { networkTag: curNetworkTag } : {}),
+          ...(curInterfaceName ? { interfaceName: curInterfaceName } : {}),
         });
       } else if (curBlackhole || curNextHop.toLowerCase() === 'none' || curNextHop.toLowerCase() === 'blackhole') {
         blackholeCidrs.push(curCidr);
@@ -2689,6 +2897,7 @@ function parseCloudConfig(lines: string[]): NodeConfig {
     curGcpNhType = undefined;
     curGcpPriority = undefined;
     curNetworkTag = undefined;
+    curInterfaceName = undefined;
     curBlackhole = false;
     curVrf = 'default';
     curName = '';
@@ -2771,7 +2980,6 @@ function parseCloudConfig(lines: string[]): NodeConfig {
       const tagM = line.match(/--tags[=\s]+"?([^"\s,]+)"?/i)?.[1];
       const prio = line.match(/--priority[=\s]+(\d+)/i)?.[1];
       const prioNum = prio ? Number(prio) : undefined;
-      if (prioNum !== undefined) defaultRoutePriority = prioNum;
       if (pfx) {
         const gcpType: StaticRouteConfig['gcpNextHopType'] = nhGw
           ? 'default-internet-gateway'
@@ -2788,6 +2996,7 @@ function parseCloudConfig(lines: string[]): NodeConfig {
           gcpNextHopType: gcpType,
           ...(prioNum !== undefined ? { gcpPriority: prioNum } : {}),
           ...(tagM ? { networkTag: tagM } : {}),
+          ...(nhVpn ? { interfaceName: nhVpn } : {}),
         });
       }
       continue;
@@ -2885,11 +3094,12 @@ function parseCloudConfig(lines: string[]): NodeConfig {
         curNextHop = line.match(/^next_hop_ilb\s*=\s*"([^"]+)"/i)![1];
       } else if (/^next_hop_vpn_tunnel\s*=/i.test(line)) {
         curGcpNhType = 'vpn-tunnel';
+        const vpnM = line.match(/^next_hop_vpn_tunnel\s*=\s*"([^"]+)"/i);
+        if (vpnM) curInterfaceName = vpnM[1];
       }
       const prioM = line.match(/^priority\s*=\s*(\d+)/i);
       if (prioM) {
         curGcpPriority = Number(prioM[1]);
-        defaultRoutePriority = Number(prioM[1]);
       }
       const tagsM = line.match(/^tags\s*=\s*\[\s*"([^"]+)"/i);
       if (tagsM) curNetworkTag = tagsM[1];
@@ -2988,7 +3198,7 @@ export function importTopologyFromText(raw: string): TopologyState {
     !isForti &&
     !isMikrotik &&
     lines.some((l) =>
-      /^set\s+(?:interfaces\s+(?:ethernet|loopback|dummy|bonding|vlan|tunnel|vti|wireguard)\s+\S+\s+address|firewall\s+(?:ipv4\s+)?(?:name|forward|input|output|zone)\b|protocols\s+(?:static\s+route|bgp\s+system-as|ospf\s+(?:parameters|interface)))\b/i.test(
+      /^set\s+(?:interfaces\s+(?:ethernet|loopback|dummy|bonding|vlan|tunnel|vti|wireguard)\s+\S+\s+address|firewall\s+(?:ipv4\s+)?(?:name|forward|input|output|zone)\b|protocols\s+(?:static\s+route|bgp\s+system-as|ospf\s+(?:parameters|interface)|isis\s+(?:net|interface)|rip\s+passive-interface))\b/i.test(
         l.trim()
       )
     );
@@ -3091,7 +3301,7 @@ function isValidIpv4Cidr(cidr: string): boolean {
 }
 
 const KNOWN_CISCO_GLOBAL_RE =
-  /^(?:version|hostname|service|no\s+|enable|boot|logging|ip\s+(?:vrf|route|prefix-list|access-list|nat|sla|dhcp|pim|multicast|routing|cef|domain|name-server|ssh)|ipv6\s+(?:unicast-routing|route)|vrf\s+(?:definition|context)|vrf-leak\s+|rd\s+|route-target\s+|address-family\s+|exit-address-family|interface\s+|router\s+(?:ospf|bgp|eigrp|isis|rip|lisp)|route-map\s+|match\s+|set\s+|vpc\s+domain|mlag\s+configuration|spanning-tree\s+|lldp\s+run|mpls\s+|segment-routing|ptp\s+|ntp\s+|bmp\s+|flow\s+|access-list\s+|track\s+|crypto\s+|feature\s+|evpn|vni\s+|member\s+|source-interface|host-reachability|exit\b|end\b)/i;
+  /^(?:version|hostname|service|no\s+|enable|boot|logging|ip\s+(?:vrf|route|prefix-list|access-list|nat|sla|dhcp|pim|multicast|routing|cef|domain|name-server|ssh|flow-export)|ipv6\s+(?:unicast-routing|route)|vrf\s+(?:definition|context)|vrf-leak\s+|rd\s+|route-target\s+|address-family\s+|exit-address-family|interface\s+|router\s+(?:ospf|bgp|eigrp|isis|rip|lisp)|route-map\s+|match\s+|set\s+|vpc\s+domain|mlag\s+configuration|spanning-tree\s+|lldp\s+run|mpls\s+|segment-routing|ptp\s+|ntp\s+|bmp\s+|flow\s+|access-list\s+|track\s+|crypto\s+|feature\s+|evpn|vni\s+|member\s+|source-interface|host-reachability|exit\b|end\b)/i;
 
 const KNOWN_CISCO_SUB_RE =
   /^(?:\d+\s+(?:permit|deny|remark)\b|description|vrf\s+(?:forwarding|member)|zone-member\s+|global-block\s+|remote-as\s+|update-source\s+|ebgp-multihop|next-hop-self|route-reflector-client|send-community|maximum-prefix|fall-over|graceful-restart|hsrp\s+|priority\s+|ip\s+(?:address|unnumbered|verify|ospf|router\s+ospf|router\s+isis|summary-address|hello-interval|hold-time|bandwidth-percent|pim|helper-address|dhcp|arp|access-group|nat|policy|\d+\.\d+\.\d+\.\d+)|ipv6\s+(?:address|ospf|nd)|encapsulation\s+dot1[qQ]|switchport|no\s+|shutdown|passive-interface|mtu\s+|speed\s+|bandwidth\s+|delay\s+|standby\s+|vrrp\s+|glbp\s+|channel-group\s+|channel-protocol\s+|vpc\s+|mlag\s+|macsec|dot1x|evpn\s+|isis\s+|bfd\s+|router-id|eigrp\s+|bgp\s+|neighbor\s+|network\s+|redistribute\s+|default-information|default-metric|auto-cost|max-metric|variance\s+|area\s+|maximum-paths|timers\s+|net\s+|is-type|metric-style|metric\s+|set-overload-bit|multi-topology|summary-address|aggregate-address|distance\s+|auto-summary|version\s+|address-family|exit-address-family|locator-table|instance-id|rloc-probing|service\s+ipv4|eid-prefix|database-mapping|map-server|map-resolver|itr\b|etr\b|proxy-itr|proxy-etr|role\s+priority|system-priority|peer-keepalive|peer-gateway|peer-switch|layer3\s+peer-router|auto-recovery|ip\s+arp\s+synchronize|delay\s+restore|domain-id|local-interface|peer-address|peer-link|reload-delay|rd\s+|route-target\s+|seq\s+|permit\b|deny\b|remark\b|match\s+|set\s+|exit\b)/i;
@@ -3204,7 +3414,7 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
       return;
     }
 
-    if (/^interface\s+/i.test(t)) {
+    if (/^interface(?:\s|$)/i.test(t)) {
       if (!/^interface\s+\S+/i.test(t)) {
         issues.push({ line: lineNum, severity: 'error', message: `Missing interface name in "${t}".` });
       }
@@ -3238,7 +3448,7 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
       section = 'acl';
       return;
     }
-    if (/^(?:vpc\s+domain|mlag\s+configuration)/i.test(t)) {
+    if (/^(?:vpc\s+domain|mlag\s+configuration|segment-routing\s+mpls)/i.test(t)) {
       section = 'other';
       return;
     }
@@ -3333,13 +3543,27 @@ export function validateRunningConfig(text: string): ConfigValidationIssue[] {
       return;
     }
 
-    // Validate static ip route
+    // Validate static ip route (including octet & subnet mask validity)
     if (/^ip\s+route\b/i.test(t)) {
-      const okVrfMask = /^ip\s+route\s+vrf\s+\S+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
-      const okVrfCidr = /^ip\s+route\s+vrf\s+\S+\s+\d+\.\d+\.\d+\.\d+\/\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
-      const okMask = /^ip\s+route\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
-      const okCidr = /^ip\s+route\s+\d+\.\d+\.\d+\.\d+\/\d+\s+\d+\.\d+\.\d+\.\d+/i.test(t);
-      if (!okVrfMask && !okVrfCidr && !okMask && !okCidr) {
+      const mMask = t.match(/^ip\s+route\s+(?:vrf\s+\S+\s+)?(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)/i);
+      const mCidr = t.match(/^ip\s+route\s+(?:vrf\s+\S+\s+)?(\d+\.\d+\.\d+\.\d+\/\d+)\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (mMask) {
+        if (!isValidIpv4(mMask[1]) || !isValidIpv4Mask(mMask[2]) || !isValidIpv4(mMask[3])) {
+          issues.push({
+            line: lineNum,
+            severity: 'error',
+            message: `Invalid IPv4 prefix, subnet mask, or next-hop in static route "${t}".`,
+          });
+        }
+      } else if (mCidr) {
+        if (!isValidIpv4Cidr(mCidr[1]) || !isValidIpv4(mCidr[2])) {
+          issues.push({
+            line: lineNum,
+            severity: 'error',
+            message: `Invalid CIDR or next-hop in static route "${t}".`,
+          });
+        }
+      } else {
         issues.push({
           line: lineNum,
           severity: 'error',

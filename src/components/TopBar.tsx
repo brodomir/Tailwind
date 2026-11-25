@@ -132,8 +132,8 @@ export const TopBar: React.FC = () => {
     [topology, simResult, pathTests]
   );
   const failoverMatrix = useMemo(
-    () => (showFailoverMatrix ? runFailoverMatrix(topology, pathTests) : null),
-    [showFailoverMatrix, topology, pathTests]
+    () => (testsOpen && showFailoverMatrix ? runFailoverMatrix(topology, pathTests) : null),
+    [testsOpen, showFailoverMatrix, topology, pathTests]
   );
   const isCustomWorkspace = workspaces.some((w) => w.id === activePresetId);
 
@@ -171,10 +171,10 @@ export const TopBar: React.FC = () => {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
-      if (e.key === '?') {
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === '?') {
         e.preventDefault();
         setShortcutsOpen((prev) => !prev);
-      } else if (e.shiftKey && e.key.toLowerCase() === 'l') {
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'l') {
         e.preventDefault();
         autoLayoutTopology();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -188,7 +188,22 @@ export const TopBar: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, clearTrace, autoLayoutTopology, searchOpen, roaOpen, shortcutsOpen, importOpen, diagOpen, traceResult]);
+  }, [
+    undo,
+    redo,
+    clearTrace,
+    autoLayoutTopology,
+    searchOpen,
+    roaOpen,
+    shortcutsOpen,
+    importOpen,
+    diagOpen,
+    exportOpen,
+    newWsOpen,
+    wsNameModalMode,
+    testsOpen,
+    traceResult,
+  ]);
 
   const handleShare = async () => {
     const url = getShareUrl();
@@ -299,15 +314,16 @@ export const TopBar: React.FC = () => {
   };
 
   const handleBulkConfigFiles = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    const fileArr = files ? Array.from(files) : [];
+    if (fileArr.length === 0) return;
     setImportError(null);
-    if (files.length === 1) {
-      const text = await files[0].text();
+    if (fileArr.length === 1) {
+      const text = await fileArr[0].text();
       setImportText(text);
       return;
     }
     const parsedNodes = [];
-    for (const f of Array.from(files)) {
+    for (const f of fileArr) {
       try {
         const text = await f.text();
         const res = importTopologyFromText(text);
@@ -324,13 +340,13 @@ export const TopBar: React.FC = () => {
     }
     if (importMode === 'hydrate') {
       const updated = hydrateMatchingNodes(parsedNodes);
-      msgApi.success(`Updated ${updated}/${parsedNodes.length} matching appliance(s) from ${files.length} file(s)`);
+      msgApi.success(`Updated ${updated}/${parsedNodes.length} matching appliance(s) from ${fileArr.length} file(s)`);
     } else if (importMode === 'merge') {
       mergeImportedNodes(parsedNodes, []);
-      msgApi.success(`Added ${parsedNodes.length} appliance(s) from ${files.length} file(s)`);
+      msgApi.success(`Added ${parsedNodes.length} appliance(s) from ${fileArr.length} file(s)`);
     } else {
       importTopology({ nodes: parsedNodes, links: [] });
-      msgApi.success(`Loaded ${parsedNodes.length} appliance(s) from ${files.length} file(s)`);
+      msgApi.success(`Loaded ${parsedNodes.length} appliance(s) from ${fileArr.length} file(s)`);
     }
     setImportOpen(false);
   };

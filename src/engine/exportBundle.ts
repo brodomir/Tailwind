@@ -10,7 +10,7 @@ function yamlScalar(val: unknown): string {
     str === '' ||
     /^\s|\s$/.test(str) ||
     /^[-?~]/.test(str) ||
-    /[:#{}[\],&*!|>'"%@`\n]/.test(str) ||
+    /[:#{}[\],&*!|>'"%@`\r\n]/.test(str) ||
     /^(true|false|null|yes|no|on|off|~)$/i.test(str) ||
     /^[+-]?\d+(\.\d+)?$/.test(str)
   ) {
@@ -40,18 +40,19 @@ function toYaml(value: unknown, indent = 0): string {
     if (entries.length === 0) return '{}';
     return entries
       .map(([k, v]) => {
+        const key = yamlScalar(k);
         if (Array.isArray(v)) {
-          if (v.length === 0) return `${pad}${k}: []`;
-          return `${pad}${k}:\n${toYaml(v, indent + 2)}`;
+          if (v.length === 0) return `${pad}${key}: []`;
+          return `${pad}${key}:\n${toYaml(v, indent + 2)}`;
         }
         if (v !== null && typeof v === 'object') {
           const objEntries = Object.entries(v as Record<string, unknown>).filter(
             ([, ov]) => ov !== undefined
           );
-          if (objEntries.length === 0) return `${pad}${k}: {}`;
-          return `${pad}${k}:\n${toYaml(v, indent + 2)}`;
+          if (objEntries.length === 0) return `${pad}${key}: {}`;
+          return `${pad}${key}:\n${toYaml(v, indent + 2)}`;
         }
-        return `${pad}${k}: ${yamlScalar(v)}`;
+        return `${pad}${key}: ${yamlScalar(v)}`;
       })
       .join('\n');
   }

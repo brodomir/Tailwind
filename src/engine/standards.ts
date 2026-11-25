@@ -10,12 +10,29 @@ import {
 import {
   detectAddressFamily,
   ip6ToBigInt,
+  ipToUint32,
   isIp6InCidr,
   isIpInCidr,
+  isValidIpv4,
   parseCidr,
   parseCidr6,
   uint32ToIp,
 } from './ipMath';
+
+function compareRouterIds(a: string, b: string): number {
+  if (isValidIpv4(a) && isValidIpv4(b)) {
+    const diff = ipToUint32(a) - ipToUint32(b);
+    if (diff !== 0) return diff;
+  }
+  return a.localeCompare(b);
+}
+
+function compareBridgeIds(a: NodeConfig, b: NodeConfig): number {
+  const pa = a.switching?.stpPriority ?? 32768;
+  const pb = b.switching?.stpPriority ?? 32768;
+  if (pa !== pb) return pa - pb;
+  return compareRouterIds(a.routerId, b.routerId);
+}
 
 export interface StpLldpResult {
   stpByNode: Map<string, StpNodeState>;
@@ -136,25 +153,24 @@ export function computeStpAndLldp(
 
   const bridgeId = (n: NodeConfig) =>
     `${n.switching?.stpPriority ?? 32768}.${n.routerId}`;
-  const sortedRoots = [...stpNodes].sort((a, b) => {
-    const pa = a.switching?.stpPriority ?? 32768;
-    const pb = b.switching?.stpPriority ?? 32768;
-    if (pa !== pb) return pa - pb;
-    return a.routerId.localeCompare(b.routerId);
-  });
+  const sortedRoots = [...stpNodes].sort(compareBridgeIds);
   const rootNode = sortedRoots[0];
   const rootBid = bridgeId(rootNode);
 
   // Dijkstra from rootNode over active L2 links
   const dist = new Map<string, number>([[rootNode.id, 0]]);
   const rootLinkByNode = new Map<string, { linkId: string; localIfId: string }>();
-  const l2Links = topology.links.filter(
-    (l) =>
-      !l.adminDown &&
-      l.linkType === 'layer2' &&
-      nodeMap.get(l.sourceNodeId)?.switching?.stpEnabled &&
-      nodeMap.get(l.targetNodeId)?.switching?.stpEnabled
-  );
+  const l2Links = topology.links.filter((l) => {
+    if (l.adminDown || l.linkType !== 'layer2') return false;
+    const srcNode = nodeMap.get(l.sourceNodeId);
+    const dstNode = nodeMap.get(l.targetNodeId);
+    if (!srcNode || !dstNode || srcNode.adminDown || dstNode.adminDown) return false;
+    if (!srcNode.switching?.stpEnabled || !dstNode.switching?.stpEnabled) return false;
+    const srcIf = srcNode.interfaces.find((i) => i.id === l.sourceInterfaceId);
+    const dstIf = dstNode.interfaces.find((i) => i.id === l.targetInterfaceId);
+    if (!srcIf || !dstIf || srcIf.shutdown || dstIf.shutdown) return false;
+    return true;
+  });
 
   const visited = new Set<string>();
   while (visited.size < stpNodes.length) {
@@ -247,7 +263,7 @@ export function computeStpAndLldp(
       const remoteCost = dist.get(remoteNode.id) ?? Infinity;
       const iWinDesignated =
         myCost < remoteCost ||
-        (myCost === remoteCost && bridgeId(n).localeCompare(bridgeId(remoteNode)) < 0);
+        (myCost === remoteCost && compareBridgeIds(n, remoteNode) < 0);
       if (iWinDesignated) {
         ports.push({ interfaceName: localIf.name, role: 'Designated', state: 'Forwarding' });
       } else {
@@ -280,6 +296,7 @@ export function computeMplsLfib(
   const nodeMap = new Map(topology.nodes.map((n) => [n.id, n]));
 
   for (const node of topology.nodes) {
+    if (node.adminDown) continue;
     const mpls = node.mpls;
     if (!mpls?.ldpEnabled && !mpls?.segmentRouting?.enabled && !(mpls?.rsvpTeTunnels?.length)) {
       continue;
@@ -294,18 +311,25 @@ export function computeMplsLfib(
       if (r.protocol !== 'ospf' && r.protocol !== 'isis' && r.protocol !== 'eigrp') continue;
 
       const remoteNode = topology.nodes.find((rn) =>
-        rn.interfaces.some(
-          (i) =>
-            !i.shutdown &&
-            (parseCidr(i.cidr)?.network === r.prefix ||
-              parseCidr(i.cidr)?.ip === r.prefix)
-        )
+        rn.interfaces.some((i) => {
+          if (i.shutdown) return false;
+          if (r.af === 6) {
+            const p6 = i.cidr6 ? parseCidr6(i.cidr6) : null;
+            return Boolean(p6 && (p6.network === r.prefix || p6.ip === r.prefix));
+          }
+          const p4 = parseCidr(i.cidr);
+          return Boolean(p4 && (p4.network === r.prefix || p4.ip === r.prefix));
+        })
       );
       const isDirectPhp =
         remoteNode &&
-        remoteNode.interfaces.some(
-          (i) => !i.shutdown && parseCidr(i.cidr)?.ip === r.nextHop
-        );
+        remoteNode.interfaces.some((i) => {
+          if (i.shutdown) return false;
+          if (r.af === 6) {
+            return Boolean(i.cidr6 && parseCidr6(i.cidr6)?.ip === r.nextHop);
+          }
+          return parseCidr(i.cidr)?.ip === r.nextHop;
+        });
 
       if (mpls.segmentRouting?.enabled && r.af !== 6) {
         const srgbBase = mpls.segmentRouting.srgbStart ?? 16000;
@@ -347,9 +371,11 @@ export function computeMplsLfib(
       const dstNode = Array.from(nodeMap.values()).find(
         (n) => n.routerId === tun.destination || n.hostname === tun.destination
       );
-      const match = rib.find(
-        (r) => r.active && r.af !== 6 && isIpInCidr(tun.destination, `${r.prefix}/${r.prefixLen}`)
-      );
+      const match = rib
+        .filter(
+          (r) => r.active && r.af !== 6 && isIpInCidr(tun.destination, `${r.prefix}/${r.prefixLen}`)
+        )
+        .sort((a, b) => b.prefixLen - a.prefixLen)[0];
       entries.push({
         inLabel: nextLabel++,
         outLabel: dstNode ? nextLabel + 50 : 'POP',
@@ -381,6 +407,8 @@ export function computeMulticastMroute(
     const rp = node.multicast.rpAddress;
 
     for (const grp of node.multicast.igmpGroups ?? []) {
+      const igmpIface = node.interfaces.find((i) => i.id === grp.interfaceId);
+      const groupVrf = igmpIface?.vrf || 'default';
       const targetIp = grp.source || rp;
       let rpfInterface = 'Null0';
       if (targetIp) {
@@ -389,12 +417,12 @@ export function computeMulticastMroute(
             (r) =>
               r.active &&
               r.af !== 6 &&
+              r.vrf === groupVrf &&
               isIpInCidr(targetIp, `${r.prefix}/${r.prefixLen}`)
           )
           .sort((a, b) => b.prefixLen - a.prefixLen);
         if (matching[0]) rpfInterface = matching[0].egressInterface;
       }
-      const igmpIface = node.interfaces.find((i) => i.id === grp.interfaceId);
       const oifs = new Set<string>();
       if (igmpIface && !igmpIface.shutdown && igmpIface.name !== rpfInterface) {
         oifs.add(igmpIface.name);
@@ -427,12 +455,21 @@ export function evaluateFlowspec(
   protocol: string,
   dstPort?: number
 ): { action: 'drop' | 'rate-limit' | 'redirect'; note: string; redirectNextHop?: string } | null {
+  if (!node.bgp.enabled) return null;
   for (const rule of node.bgp.flowspecRules ?? []) {
-    if (rule.srcCidr && detectAddressFamily(srcIp) === 4 && !isIpInCidr(srcIp, rule.srcCidr)) {
-      continue;
+    if (rule.srcCidr) {
+      const srcAf = detectAddressFamily(srcIp);
+      const ruleSrcAf = detectAddressFamily(rule.srcCidr);
+      if (!srcAf || srcAf !== ruleSrcAf) continue;
+      const matched = srcAf === 4 ? isIpInCidr(srcIp, rule.srcCidr) : isIp6InCidr(srcIp, rule.srcCidr);
+      if (!matched) continue;
     }
-    if (rule.dstCidr && detectAddressFamily(dstIp) === 4 && !isIpInCidr(dstIp, rule.dstCidr)) {
-      continue;
+    if (rule.dstCidr) {
+      const dstAf = detectAddressFamily(dstIp);
+      const ruleDstAf = detectAddressFamily(rule.dstCidr);
+      if (!dstAf || dstAf !== ruleDstAf) continue;
+      const matched = dstAf === 4 ? isIpInCidr(dstIp, rule.dstCidr) : isIp6InCidr(dstIp, rule.dstCidr);
+      if (!matched) continue;
     }
     if (rule.protocol && rule.protocol !== 'any' && rule.protocol !== protocol) {
       continue;
@@ -495,11 +532,13 @@ export function computeEvpnDfAndBmp(
   >();
   for (const node of topology.nodes) {
     if (node.adminDown) continue;
-    for (const iface of node.interfaces) {
-      if (iface.shutdown || !iface.evpnEsi) continue;
-      const list = esiParticipants.get(iface.evpnEsi) ?? [];
-      list.push({ nodeId: node.id, routerId: node.routerId, ifaceName: iface.name });
-      esiParticipants.set(iface.evpnEsi, list);
+    if (node.evpn?.enabled !== false) {
+      for (const iface of node.interfaces) {
+        if (iface.shutdown || !iface.evpnEsi) continue;
+        const list = esiParticipants.get(iface.evpnEsi) ?? [];
+        list.push({ nodeId: node.id, routerId: node.routerId, ifaceName: iface.name });
+        esiParticipants.set(iface.evpnEsi, list);
+      }
     }
 
     if (node.telemetry?.bmpServerIp && node.bgp.enabled) {
@@ -514,7 +553,7 @@ export function computeEvpnDfAndBmp(
   }
 
   for (const [esi, members] of esiParticipants) {
-    const sorted = [...members].sort((a, b) => a.routerId.localeCompare(b.routerId));
+    const sorted = [...members].sort((a, b) => compareRouterIds(a.routerId, b.routerId));
     sorted.forEach((m, idx) => {
       const list = evpnDfByNode.get(m.nodeId) ?? [];
       list.push({ esi, interfaceName: m.ifaceName, role: idx === 0 ? 'DF' : 'Backup' });

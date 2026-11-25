@@ -399,6 +399,13 @@ const SubnetEdge: React.FC<EdgeProps<Edge<SubnetEdgeData>>> = ({
   return (
     <>
       <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={18}
+        className="react-flow__edge-interaction"
+      />
+      <path
         id={id}
         d={edgePath}
         fill="none"
@@ -608,6 +615,7 @@ export const TopologyCanvas: React.FC = () => {
     linkType: 'ethernet' | 'ipsec' | 'layer2';
   } | null>(null);
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   const tracedNodeStatus = useMemo(() => {
     const map = new Map<string, 'hop' | 'delivered' | 'dropped' | 'loop' | 'blocked'>();
@@ -663,6 +671,7 @@ export const TopologyCanvas: React.FC = () => {
         id: n.id,
         type: 'device',
         position: n.position,
+        selected: n.id === selectedNodeId,
         data: {
           node: n,
           activeRouteCount:
@@ -813,7 +822,8 @@ export const TopologyCanvas: React.FC = () => {
         source: l.sourceNodeId,
         target: l.targetNodeId,
         type: 'subnet',
-        zIndex: isConnectedToSelected ? 10 : 0,
+        selected: l.id === selectedEdgeId,
+        zIndex: isConnectedToSelected || l.id === selectedEdgeId ? 10 : 0,
         data: {
           label:
             subnetLabel === 'link' && isLayer2
@@ -839,15 +849,15 @@ export const TopologyCanvas: React.FC = () => {
           targetSide: l.targetHandle,
           controlPointOffset: l.controlPointOffset,
           onChangeControlPoint: (offset) => updateLink(l.id, { controlPointOffset: offset }),
-          highlighted: isConnectedToSelected,
-          dimmed: isDimmed,
+          highlighted: isConnectedToSelected || l.id === selectedEdgeId,
+          dimmed: isDimmed && l.id !== selectedEdgeId,
           vrfName: linkVrf,
           vrfColor: linkVrfColor,
           traceVrfColor: traceEdge?.vrf ? topology.vrfColors?.[traceEdge.vrf] : undefined,
         },
       };
     });
-  }, [topology.links, topology.nodes, topology.vrfColors, tracedEdgeMap, returnEdgeMap, updateLink, selectedNodeId]);
+  }, [topology.links, topology.nodes, topology.vrfColors, tracedEdgeMap, returnEdgeMap, updateLink, selectedNodeId, selectedEdgeId]);
 
   const handleNodesChange: OnNodesChange<Node<DeviceNodeData>> = (changes) => {
     for (const c of changes) {
@@ -920,10 +930,23 @@ export const TopologyCanvas: React.FC = () => {
         onNodesChange={handleNodesChange}
         onConnect={handleConnect}
         onNodesDelete={(nodes) => nodes.forEach((n) => deleteNode(n.id))}
-        onEdgesDelete={(edges) => edges.forEach((e) => deleteLink(e.id))}
+        onEdgesDelete={(edges) => {
+          edges.forEach((e) => deleteLink(e.id));
+          setSelectedEdgeId(null);
+        }}
         deleteKeyCode={['Backspace', 'Delete']}
-        onNodeClick={(_, node) => selectNode(node.id)}
-        onPaneClick={() => selectNode(null)}
+        onNodeClick={(_, node) => {
+          setSelectedEdgeId(null);
+          selectNode(node.id);
+        }}
+        onEdgeClick={(_, edge) => {
+          setSelectedEdgeId(edge.id);
+          selectNode(null);
+        }}
+        onPaneClick={() => {
+          setSelectedEdgeId(null);
+          selectNode(null);
+        }}
         onInit={(instance) => {
           rfInstanceRef.current = instance;
           requestAnimationFrame(syncViewportCenter);
@@ -1109,12 +1132,12 @@ export const TopologyCanvas: React.FC = () => {
       )}
 
       <Modal
-        open={Boolean(pendingLink)}
+        open={Boolean(pendingLink && pendingSrcNode && pendingDstNode)}
         title="Connect Network Link"
         okText="Connect"
         onCancel={() => setPendingLink(null)}
         onOk={() => {
-          if (!pendingLink) return;
+          if (!pendingLink || !pendingSrcNode || !pendingDstNode) return;
           addLink({
             id: `link-${Date.now()}`,
             sourceNodeId: pendingLink.sourceNodeId,
@@ -1193,7 +1216,7 @@ export const TopologyCanvas: React.FC = () => {
 
       <Modal
         title="Edit Link / Tunnel Properties"
-        open={Boolean(editingLinkId)}
+        open={Boolean(editingLinkId && topology.links.some((l) => l.id === editingLinkId))}
         onCancel={() => setEditingLinkId(null)}
         footer={null}
         width={380}

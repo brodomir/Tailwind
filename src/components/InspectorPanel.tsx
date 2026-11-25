@@ -1481,8 +1481,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   value={t.targetIp}
                   onChange={(e) =>
                     updateNode(node.id, {
-                      tracks: (node.tracks ?? []).map((x) =>
-                        x.id === t.id ? { ...x, targetIp: e.target.value } : x
+                      tracks: (node.tracks ?? []).map((x, i) =>
+                        i === idx ? { ...x, targetIp: e.target.value } : x
                       ),
                     })
                   }
@@ -1494,8 +1494,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   value={t.vrf ?? 'default'}
                   onChange={(e) =>
                     updateNode(node.id, {
-                      tracks: (node.tracks ?? []).map((x) =>
-                        x.id === t.id ? { ...x, vrf: e.target.value || 'default' } : x
+                      tracks: (node.tracks ?? []).map((x, i) =>
+                        i === idx ? { ...x, vrf: e.target.value || 'default' } : x
                       ),
                     })
                   }
@@ -1508,7 +1508,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   icon={<DeleteOutlined />}
                   onClick={() =>
                     updateNode(node.id, {
-                      tracks: (node.tracks ?? []).filter((x) => x.id !== t.id),
+                      tracks: (node.tracks ?? []).filter((_, i) => i !== idx),
                     })
                   }
                 />
@@ -1521,7 +1521,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 updateNode(node.id, {
                   tracks: [
                     ...(node.tracks ?? []),
-                    { id: `${(node.tracks?.length ?? 0) + 1}`, targetIp: '8.8.8.8', vrf: 'default' },
+                    {
+                      id: String(Math.max(0, ...(node.tracks ?? []).map((t) => Number(t.id) || 0)) + 1),
+                      targetIp: '8.8.8.8',
+                      vrf: 'default',
+                    },
                   ],
                 })
               }
@@ -2267,12 +2271,13 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     <div className="flex items-center gap-1 text-[11px]" title="EIGRP K-values (K1,K2,K3,K4,K5)">
                       <span className="text-slate-400">K:</span>
                       <Input
+                        key={`${node.id}-${(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}`}
                         size="small"
                         style={{ width: 84, fontFamily: 'monospace' }}
                         placeholder="1,0,1,0,0"
-                        value={(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}
-                        onChange={(e) => {
-                          const parts = e.target.value.split(/[,\s]+/).map(Number);
+                        defaultValue={(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}
+                        onBlur={(e) => {
+                          const parts = e.target.value.split(/[,\s]+/).filter(Boolean).map(Number);
                           if (parts.length === 5 && parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) {
                             updateNode(node.id, {
                               eigrp: {
@@ -2285,6 +2290,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             });
                           }
                         }}
+                        onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
                       />
                     </div>
                     <label className="flex cursor-pointer items-center gap-1 text-slate-300">
@@ -4072,12 +4078,15 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         />
                       </div>
                       <div className="grid grid-cols-12 gap-1.5">
-                        <Input
+                        <Select
+                          mode="tags"
                           size="small"
                           className="col-span-6"
-                          placeholder="Members (comma-sep, e.g. port1,port2)"
-                          value={rule.preferredMembers.join(',')}
-                          onChange={(e) =>
+                          tokenSeparators={[',', ' ']}
+                          placeholder="Members (e.g. port1, port2)"
+                          value={rule.preferredMembers}
+                          options={node.interfaces.map((i) => ({ value: i.name, label: i.name }))}
+                          onChange={(vals) =>
                             updateNode(node.id, {
                               sdwanSla: {
                                 ...node.sdwanSla!,
@@ -4085,10 +4094,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                                   r.id === rule.id
                                     ? {
                                         ...r,
-                                        preferredMembers: e.target.value
-                                          .split(',')
-                                          .map((s) => s.trim())
-                                          .filter(Boolean),
+                                        preferredMembers: vals.map((s) => s.trim()).filter(Boolean),
                                       }
                                     : r
                                 ),
@@ -4695,16 +4701,16 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     }
                   />
                   {node.bgp.confederationId && (
-                    <Input
+                    <Select
+                      mode="tags"
                       size="small"
-                      className="!w-28"
-                      placeholder="Confed Peers (65001 65002)"
-                      value={(node.bgp.confederationPeers ?? []).join(' ')}
-                      style={{ fontFamily: 'monospace' }}
-                      onChange={(e) => {
-                        const peers = e.target.value
-                          .split(/[,\s]+/)
-                          .map(Number)
+                      className="!min-w-32"
+                      tokenSeparators={[',', ' ']}
+                      placeholder="Confed Peers (65001, 65002)"
+                      value={(node.bgp.confederationPeers ?? []).map(String)}
+                      onChange={(vals) => {
+                        const peers = vals
+                          .map((v) => Number(v.trim()))
                           .filter((n) => Number.isFinite(n) && n > 0);
                         updateNode(node.id, {
                           bgp: { ...node.bgp, confederationPeers: peers.length ? peers : undefined },
@@ -5568,29 +5574,6 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         }
                         options={vrfs.map((v) => ({ value: v, label: v }))}
                       />
-                      <Input
-                        size="small"
-                        className="col-span-12 mt-1"
-                        placeholder="Communities (space/comma separated, e.g. 65100:100 no-export)"
-                        value={(bn.communities ?? []).join(' ')}
-                        style={{ fontFamily: 'monospace', fontSize: 11 }}
-                        onChange={(e) => {
-                          const list = e.target.value
-                            .split(/[\s,]+/)
-                            .map((s) => s.trim())
-                            .filter(Boolean);
-                          updateNode(node.id, {
-                            bgp: {
-                              ...node.bgp,
-                              networks: node.bgp.networks.map((x) =>
-                                x.id === bn.id
-                                  ? { ...x, communities: list.length ? list : undefined }
-                                  : x
-                              ),
-                            },
-                          });
-                        }}
-                      />
                       <Button
                         size="small"
                         danger
@@ -5605,6 +5588,27 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             },
                           })
                         }
+                      />
+                      <Select
+                        mode="tags"
+                        size="small"
+                        className="col-span-12 mt-1"
+                        tokenSeparators={[',', ' ']}
+                        placeholder="Communities (e.g. 65100:100, no-export)"
+                        value={bn.communities ?? []}
+                        onChange={(vals) => {
+                          const list = vals.map((s) => s.trim()).filter(Boolean);
+                          updateNode(node.id, {
+                            bgp: {
+                              ...node.bgp,
+                              networks: node.bgp.networks.map((x) =>
+                                x.id === bn.id
+                                  ? { ...x, communities: list.length ? list : undefined }
+                                  : x
+                              ),
+                            },
+                          });
+                        }}
                       />
                     </div>
                   ))}
@@ -6819,12 +6823,19 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             })}
           </div>
 
-          {targetNode && (
+          {targetNode && (() => {
+            const validSrcIf = node.interfaces.some((i) => i.id === newLinkSrcIf)
+              ? newLinkSrcIf
+              : node.interfaces[0]?.id;
+            const validDstIf = targetNode.interfaces.some((i) => i.id === newLinkDstIf)
+              ? newLinkDstIf
+              : targetNode.interfaces[0]?.id;
+            return (
             <Card size="small" title="Connect Interface Link">
               <div className="grid grid-cols-3 gap-1.5">
                 <Select
                   size="small"
-                  value={newLinkSrcIf || node.interfaces[0]?.id}
+                  value={validSrcIf}
                   onChange={setNewLinkSrcIf}
                   options={node.interfaces.map((i) => ({ value: i.id, label: i.name }))}
                 />
@@ -6839,7 +6850,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 />
                 <Select
                   size="small"
-                  value={newLinkDstIf || targetNode.interfaces[0]?.id}
+                  value={validDstIf}
                   onChange={setNewLinkDstIf}
                   options={targetNode.interfaces.map((i) => ({ value: i.id, label: i.name }))}
                 />
@@ -6860,15 +6871,13 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   type="primary"
                   icon={<PlusOutlined />}
                   onClick={() => {
-                    const sIf = newLinkSrcIf || node.interfaces[0]?.id;
-                    const dIf = newLinkDstIf || targetNode.interfaces[0]?.id;
-                    if (!sIf || !dIf) return;
+                    if (!validSrcIf || !validDstIf) return;
                     addLink({
                       id: `link-${Date.now()}`,
                       sourceNodeId: node.id,
-                      sourceInterfaceId: sIf,
+                      sourceInterfaceId: validSrcIf,
                       targetNodeId: targetNode.id,
-                      targetInterfaceId: dIf,
+                      targetInterfaceId: validDstIf,
                       linkType: newLinkType,
                       ipsecConfig:
                         newLinkType === 'ipsec'
@@ -6881,7 +6890,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                 </Button>
               </div>
             </Card>
-          )}
+            );
+          })()}
         </div>
       ),
     },

@@ -623,7 +623,7 @@ export const VENDOR_CAPABILITIES: Record<VendorProfile, VendorCapabilities> = {
   'cisco-ios-xe': {
     igps: { ospf: true, eigrp: true, isis: true, rip: true },
     bgp: true,
-    adProtocols: ['static', 'ebgp', 'eigrp', 'ospf', 'isis', 'rip', 'ibgp'],
+    adProtocols: ['static', 'ebgp', 'eigrp', 'ospf', 'isis', 'rip', 'ibgp', 'lisp'],
     fhrp: { supported: true, label: 'HSRP / VRRP Virtual Gateways', protocols: ['hsrp', 'vrrp'], vrrpLabel: 'VRRP' },
     lag: { supported: true, label: 'EtherChannel (LACP / PAgP)', modes: ['active', 'passive', 'desirable', 'auto', 'on'] },
     zones: false,
@@ -644,7 +644,7 @@ export const VENDOR_CAPABILITIES: Record<VendorProfile, VendorCapabilities> = {
   'cisco-nx-os': {
     igps: { ospf: true, eigrp: true, isis: true, rip: true },
     bgp: true,
-    adProtocols: ['static', 'ebgp', 'eigrp', 'ospf', 'isis', 'rip', 'ibgp'],
+    adProtocols: ['static', 'ebgp', 'eigrp', 'ospf', 'isis', 'rip', 'ibgp', 'lisp'],
     fhrp: { supported: true, label: 'HSRP / VRRP Virtual Gateways', protocols: ['hsrp', 'vrrp'], vrrpLabel: 'VRRP' },
     lag: { supported: true, label: 'Port-Channel (LACP / Static)', modes: ['active', 'passive', 'on'] },
     zones: false,

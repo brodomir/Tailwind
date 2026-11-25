@@ -22,7 +22,12 @@ function entryKey(r: RibEntry): string {
 }
 
 function entryFingerprint(r: RibEntry): string {
-  return `${r.protocol}|${r.ospfType ?? ''}|${r.ad}|${r.metric}|${r.nextHop}|${r.egressInterface}|${r.leakedFromVrf ?? ''}`;
+  const b = r.bgpAttrs;
+  const bgpPart = b
+    ? `${b.weight}|${b.localPref}|${b.asPath.join(',')}|${b.origin}|${b.med}|${(b.communities ?? []).join(',')}|${b.rpkiState ?? ''}`
+    : '';
+  const tlocPart = r.tloc ? `${r.tloc.systemIp}|${r.tloc.color}|${r.tloc.encap}` : '';
+  return `${r.protocol}|${r.ospfType ?? ''}|${r.isisLevel ?? ''}|${r.ad}|${r.metric}|${r.nextHop}|${r.egressInterface}|${r.leakedFromVrf ?? ''}|${r.tag ?? ''}|${r.evpnVni ?? ''}|${r.azureNextHopType ?? ''}|${r.awsTargetType ?? ''}|${r.gcpNextHopType ?? ''}|${r.gcpPriority ?? ''}|${bgpPart}|${tlocPart}`;
 }
 
 export function computeRibDiff(
