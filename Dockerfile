@@ -1,5 +1,5 @@
 # Stage 1: Build static production bundle (no source maps, no TypeScript source in final image)
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 
 COPY package*.json ./
