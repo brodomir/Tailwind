@@ -8,7 +8,7 @@ function ciscoCode(entry: RibEntry): string {
     case 'local':
       return 'L';
     case 'static':
-      return entry.prefix === '0.0.0.0' && entry.prefixLen === 0 ? 'S*' : 'S';
+      return (entry.prefix === '0.0.0.0' || entry.prefix === '::') && entry.prefixLen === 0 ? 'S*' : 'S';
     case 'ospf':
       if (entry.ospfType === 'inter') return 'O IA';
       if (entry.ospfType === 'ext1') return 'O E1';
@@ -71,7 +71,7 @@ export function formatCiscoCli(node: NodeConfig, result: NodeRoutingResult): str
       if (r.protocol === 'connected' || r.protocol === 'local') {
         lines.push(`${code} ${cidr} is directly connected, ${r.egressInterface}${leakNote}`);
       } else {
-        const via = r.nextHop !== '0.0.0.0' ? `via ${r.nextHop}` : 'directly';
+        const via = r.nextHop !== '0.0.0.0' && r.nextHop !== '::' ? `via ${r.nextHop}` : 'directly';
         const iface = r.egressInterface ? `, ${r.egressInterface}` : '';
         const commNote = r.bgpAttrs?.communities?.length
           ? ` [comm: ${r.bgpAttrs.communities.join(' ')}]`
@@ -100,7 +100,7 @@ export function formatCiscoCli(node: NodeConfig, result: NodeRoutingResult): str
       `Local   Outgoing      Prefix             Bytes    Outgoing   Next Hop`,
       ...result.lfib.map(
         (e) =>
-          `${String(e.inLabel).padEnd(8)}${String(e.outLabel).padEnd(14)}${e.prefix.padEnd(19)}0        ${e.egressInterface.padEnd(11)}${e.nextHop} [${e.protocol.toUpperCase()}]`
+          `${String(e.inLabel).padEnd(8)} ${String(e.outLabel).padEnd(13)} ${e.prefix.padEnd(23)} 0        ${(e.egressInterface || '-').padEnd(18)} ${e.nextHop} [${e.protocol.toUpperCase()}]`
       ),
     ];
     sections.push(lfibLines.join('\n'));
@@ -112,7 +112,7 @@ export function formatCiscoCli(node: NodeConfig, result: NodeRoutingResult): str
       `Root ID: ${result.stpState.rootBridgeId}${result.stpState.isRoot ? ' (This bridge is the root)' : ''}`,
       `Interface        Role       State`,
       ...result.stpState.ports.map(
-        (p) => `${p.interfaceName.padEnd(17)}${p.role.padEnd(11)}${p.state}`
+        (p) => `${p.interfaceName.padEnd(18)} ${p.role.padEnd(11)} ${p.state}`
       ),
     ];
     sections.push(stpLines.join('\n'));
@@ -123,7 +123,7 @@ export function formatCiscoCli(node: NodeConfig, result: NodeRoutingResult): str
       `${node.hostname}# show lldp neighbors`,
       `Device ID           Local Intf     Port ID`,
       ...result.lldpNeighbors.map(
-        (n) => `${n.remoteChassisId.padEnd(20)}${n.localInterface.padEnd(15)}${n.remotePort}`
+        (n) => `${n.remoteChassisId.padEnd(20)} ${n.localInterface.padEnd(18)} ${n.remotePort}`
       ),
     ];
     sections.push(lldpLines.join('\n'));
@@ -292,7 +292,7 @@ export function formatForcepointFrrCli(node: NodeConfig, result: NodeRoutingResu
       `Local   Outgoing      Prefix             Bytes    Outgoing   Next Hop`,
       ...result.lfib.map(
         (e) =>
-          `${String(e.inLabel).padEnd(8)}${String(e.outLabel).padEnd(14)}${e.prefix.padEnd(19)}0        ${e.egressInterface.padEnd(11)}${e.nextHop} [${e.protocol.toUpperCase()}]`
+          `${String(e.inLabel).padEnd(8)} ${String(e.outLabel).padEnd(13)} ${e.prefix.padEnd(23)} 0        ${(e.egressInterface || '-').padEnd(18)} ${e.nextHop} [${e.protocol.toUpperCase()}]`
       ),
     ];
     sections.push(lfibLines.join('\n'));
@@ -304,7 +304,7 @@ export function formatForcepointFrrCli(node: NodeConfig, result: NodeRoutingResu
       `Root ID: ${result.stpState.rootBridgeId}${result.stpState.isRoot ? ' (This bridge is the root)' : ''}`,
       `Interface        Role       State`,
       ...result.stpState.ports.map(
-        (p) => `${p.interfaceName.padEnd(17)}${p.role.padEnd(11)}${p.state}`
+        (p) => `${p.interfaceName.padEnd(18)} ${p.role.padEnd(11)} ${p.state}`
       ),
     ];
     sections.push(stpLines.join('\n'));
@@ -315,7 +315,7 @@ export function formatForcepointFrrCli(node: NodeConfig, result: NodeRoutingResu
       `${node.hostname}# show lldp neighbors`,
       `Device ID           Local Intf     Port ID`,
       ...result.lldpNeighbors.map(
-        (n) => `${n.remoteChassisId.padEnd(20)}${n.localInterface.padEnd(15)}${n.remotePort}`
+        (n) => `${n.remoteChassisId.padEnd(20)} ${n.localInterface.padEnd(18)} ${n.remotePort}`
       ),
     ];
     sections.push(lldpLines.join('\n'));
@@ -398,7 +398,7 @@ function formatFortigateCli(node: NodeConfig, result: NodeRoutingResult): string
       `Local   Outgoing      Prefix             Bytes    Outgoing   Next Hop`,
       ...result.lfib.map(
         (e) =>
-          `${String(e.inLabel).padEnd(8)}${String(e.outLabel).padEnd(14)}${e.prefix.padEnd(19)}0        ${e.egressInterface.padEnd(11)}${e.nextHop} [${e.protocol.toUpperCase()}]`
+          `${String(e.inLabel).padEnd(8)} ${String(e.outLabel).padEnd(13)} ${e.prefix.padEnd(23)} 0        ${(e.egressInterface || '-').padEnd(18)} ${e.nextHop} [${e.protocol.toUpperCase()}]`
       ),
     ];
     sections.push(lfibLines.join('\n'));
@@ -410,7 +410,7 @@ function formatFortigateCli(node: NodeConfig, result: NodeRoutingResult): string
       `Root ID: ${result.stpState.rootBridgeId}${result.stpState.isRoot ? ' (This bridge is the root)' : ''}`,
       `Interface        Role       State`,
       ...result.stpState.ports.map(
-        (p) => `${p.interfaceName.padEnd(17)}${p.role.padEnd(11)}${p.state}`
+        (p) => `${p.interfaceName.padEnd(18)} ${p.role.padEnd(11)} ${p.state}`
       ),
     ];
     sections.push(stpLines.join('\n'));
@@ -421,7 +421,7 @@ function formatFortigateCli(node: NodeConfig, result: NodeRoutingResult): string
       `${node.hostname}# show lldp neighbors`,
       `Device ID           Local Intf     Port ID`,
       ...result.lldpNeighbors.map(
-        (n) => `${n.remoteChassisId.padEnd(20)}${n.localInterface.padEnd(15)}${n.remotePort}`
+        (n) => `${n.remoteChassisId.padEnd(20)} ${n.localInterface.padEnd(18)} ${n.remotePort}`
       ),
     ];
     sections.push(lldpLines.join('\n'));
@@ -570,7 +570,7 @@ function formatJunosRouteCli(node: NodeConfig, result: NodeRoutingResult): strin
       `Local   Outgoing      Prefix             Bytes    Outgoing   Next Hop`,
       ...result.lfib.map(
         (e) =>
-          `${String(e.inLabel).padEnd(8)}${String(e.outLabel).padEnd(14)}${e.prefix.padEnd(19)}0        ${e.egressInterface.padEnd(11)}${e.nextHop} [${e.protocol.toUpperCase()}]`
+          `${String(e.inLabel).padEnd(8)} ${String(e.outLabel).padEnd(13)} ${e.prefix.padEnd(23)} 0        ${(e.egressInterface || '-').padEnd(18)} ${e.nextHop} [${e.protocol.toUpperCase()}]`
       ),
     ];
     sections.push(lfibLines.join('\n'));
@@ -582,7 +582,7 @@ function formatJunosRouteCli(node: NodeConfig, result: NodeRoutingResult): strin
       `Root ID: ${result.stpState.rootBridgeId}${result.stpState.isRoot ? ' (This bridge is the root)' : ''}`,
       `Interface        Role       State`,
       ...result.stpState.ports.map(
-        (p) => `${p.interfaceName.padEnd(17)}${p.role.padEnd(11)}${p.state}`
+        (p) => `${p.interfaceName.padEnd(18)} ${p.role.padEnd(11)} ${p.state}`
       ),
     ];
     sections.push(stpLines.join('\n'));
@@ -593,7 +593,7 @@ function formatJunosRouteCli(node: NodeConfig, result: NodeRoutingResult): strin
       `${node.hostname}# show lldp neighbors`,
       `Device ID           Local Intf     Port ID`,
       ...result.lldpNeighbors.map(
-        (n) => `${n.remoteChassisId.padEnd(20)}${n.localInterface.padEnd(15)}${n.remotePort}`
+        (n) => `${n.remoteChassisId.padEnd(20)} ${n.localInterface.padEnd(18)} ${n.remotePort}`
       ),
     ];
     sections.push(lldpLines.join('\n'));
@@ -909,7 +909,9 @@ export function formatRunningConfig(node: NodeConfig): string {
                 ? `  vpc_endpoint_id           = "vpce-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
                 : sr.awsTargetType === 'vgw'
                   ? `  gateway_id                = "vgw-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
-                  : sr.awsTargetType === 'blackhole' || sr.nextHop === 'blackhole'
+                  : sr.awsTargetType === 'tgw'
+                    ? `  transit_gateway_id        = "tgw-${sr.id}"\n  next_hop                  = "${sr.nextHop}"`
+                    : sr.awsTargetType === 'blackhole' || sr.nextHop === 'blackhole'
                     ? `  blackhole                 = true`
                     : `  next_hop                  = "${sr.nextHop}"`;
       const resType =
@@ -1204,7 +1206,7 @@ export function formatRunningConfig(node: NodeConfig): string {
       for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
         const vr = iface.vrf || 'default';
         lines.push(
-          `set network virtual-router ${vr} protocol ospf area 0.0.0.${iface.ospfArea} interface ${iface.name}${iface.passive ? ' passive enable yes' : ''}`
+          `set network virtual-router ${vr} protocol ospf area ${uint32ToIp((iface.ospfArea ?? 0) >>> 0)} interface ${iface.name}${iface.passive ? ' passive enable yes' : ''}`
         );
       }
     }
@@ -1327,7 +1329,7 @@ export function formatRunningConfig(node: NodeConfig): string {
     }
     if (node.ospf.enabled) {
       for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
-        lines.push(`set ospf instance default interface ${iface.name} area 0.0.0.${iface.ospfArea} on`);
+        lines.push(`set ospf instance default interface ${iface.name} area ${uint32ToIp((iface.ospfArea ?? 0) >>> 0)} on`);
         if (iface.passive) lines.push(`set ospf instance default interface ${iface.name} passive on`);
       }
     }
@@ -1359,7 +1361,7 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(`set routing-instances ${iface.vrf} interface ${fullIf}`);
       }
       if (node.ospf.enabled && iface.ospfArea !== undefined) {
-        lines.push(`set protocols ospf area 0.0.0.${iface.ospfArea} interface ${fullIf}${iface.passive ? ' passive' : ''}`);
+        lines.push(`set protocols ospf area ${uint32ToIp((iface.ospfArea ?? 0) >>> 0)} interface ${fullIf}${iface.passive ? ' passive' : ''}`);
       }
       if (node.isis?.enabled && iface.isisLevel) {
         lines.push(`set protocols isis interface ${fullIf}${iface.passive ? ' passive' : ''}`);
@@ -1400,7 +1402,7 @@ export function formatRunningConfig(node: NodeConfig): string {
       lines.push(`/routing ospf instance add name=default-v2 router-id=${node.routerId}`);
       const areas = new Set(node.interfaces.filter((i) => i.ospfArea !== undefined).map((i) => i.ospfArea!));
       for (const a of areas) {
-        lines.push(`/routing ospf area add name=area-${a} area-id=0.0.0.${a} instance=default-v2`);
+        lines.push(`/routing ospf area add name=area-${a} area-id=${uint32ToIp(a >>> 0)} instance=default-v2`);
       }
       for (const iface of node.interfaces.filter((i) => i.ospfArea !== undefined)) {
         lines.push(`/routing ospf interface-template add area=area-${iface.ospfArea} interfaces=${iface.name}${iface.passive ? ' passive=yes' : ''}`);
@@ -1815,7 +1817,7 @@ export function formatRunningConfig(node: NodeConfig): string {
     if (node.ospf.defaultOriginate) {
       lines.push(` default-information originate`);
     }
-    for (const r of node.redistributions.filter((x) => x.to === 'ospf')) {
+    for (const r of node.redistributions.filter((x) => x.to === 'ospf' && (x.vrf || 'default') === 'default')) {
       const mType = r.metricType === 'E1' ? ' metric-type 1' : '';
       lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}${mType} subnets`);
     }
@@ -1828,6 +1830,9 @@ export function formatRunningConfig(node: NodeConfig): string {
         ...node.ospf.networks
           .filter((n) => (n.vrf || 'default') !== 'default')
           .map((n) => n.vrf!),
+        ...node.redistributions
+          .filter((r) => r.to === 'ospf' && (r.vrf || 'default') !== 'default')
+          .map((r) => r.vrf!),
       ])
     );
     for (const ovrf of ospfNonDefaultVrfs) {
@@ -1843,6 +1848,10 @@ export function formatRunningConfig(node: NodeConfig): string {
           const wildcard = uint32ToIp((~parsed.maskUint32) >>> 0);
           lines.push(` network ${parsed.network} ${wildcard} area ${net.area}`);
         }
+      }
+      for (const r of node.redistributions.filter((x) => x.to === 'ospf' && (x.vrf || 'default') === ovrf)) {
+        const mType = r.metricType === 'E1' ? ' metric-type 1' : '';
+        lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}${mType} subnets`);
       }
       lines.push(`!`);
     }
@@ -1928,8 +1937,17 @@ export function formatRunningConfig(node: NodeConfig): string {
     lines.push(` instance-id ${node.lisp.instanceId ?? 0}`);
     lines.push(`  service ipv4`);
     if (node.lisp.role !== 'ms-mr') {
-      lines.push(`   itr`);
-      lines.push(`   etr`);
+      if (node.lisp.role === 'pxtr') {
+        lines.push(`   proxy-itr`);
+        lines.push(`   proxy-etr`);
+      } else if (node.lisp.role === 'pitr') {
+        lines.push(`   proxy-itr`);
+      } else if (node.lisp.role === 'petr') {
+        lines.push(`   proxy-etr`);
+      } else {
+        lines.push(`   itr`);
+        lines.push(`   etr`);
+      }
       if (node.lisp.bfd) {
         lines.push(`   rloc-probing bfd`);
       }
@@ -2045,6 +2063,8 @@ export function formatRunningConfig(node: NodeConfig): string {
         ...Object.keys(node.vrfRouterIds ?? {}).filter((v) => v !== 'default' && node.vrfRouterIds?.[v]?.trim()),
         ...node.bgp.peers.map((p) => p.vrf || 'default').filter((v) => v !== 'default'),
         ...node.bgp.networks.map((n) => n.vrf || 'default').filter((v) => v !== 'default'),
+        ...(node.bgp.aggregates ?? []).map((a) => a.vrf || 'default').filter((v) => v !== 'default'),
+        ...node.redistributions.filter((x) => x.to === 'bgp').map((r) => r.vrf || 'default').filter((v) => v !== 'default'),
       ])
     );
     for (const vrfName of bgpVrfs) {
@@ -2060,9 +2080,20 @@ export function formatRunningConfig(node: NodeConfig): string {
           lines.push(`  network ${parsed.network} mask ${uint32ToIp(parsed.maskUint32)}`);
         }
       }
+      for (const agg of (node.bgp.aggregates ?? []).filter((a) => (a.vrf || 'default') === vrfName)) {
+        const parsed = parseCidr(agg.prefix);
+        if (parsed) {
+          lines.push(
+            `  aggregate-address ${parsed.network} ${uint32ToIp(parsed.maskUint32)}${agg.summaryOnly ? ' summary-only' : ''}${agg.asSet ? ' as-set' : ''}`
+          );
+        }
+      }
+      for (const r of node.redistributions.filter((x) => x.to === 'bgp' && (x.vrf || 'default') === vrfName)) {
+        lines.push(`  redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}`);
+      }
       lines.push(` exit-address-family`);
     }
-    for (const agg of node.bgp.aggregates ?? []) {
+    for (const agg of (node.bgp.aggregates ?? []).filter((a) => (a.vrf || 'default') === 'default')) {
       const parsed = parseCidr(agg.prefix);
       if (parsed) {
         lines.push(
@@ -2070,7 +2101,7 @@ export function formatRunningConfig(node: NodeConfig): string {
         );
       }
     }
-    for (const r of node.redistributions.filter((x) => x.to === 'bgp')) {
+    for (const r of node.redistributions.filter((x) => x.to === 'bgp' && (x.vrf || 'default') === 'default')) {
       lines.push(` redistribute ${r.from}${r.metric ? ` metric ${r.metric}` : ''}`);
     }
     lines.push(`!`);

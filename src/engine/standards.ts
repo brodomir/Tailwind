@@ -153,13 +153,6 @@ export function computeStpAndLldp(
 
   const bridgeId = (n: NodeConfig) =>
     `${n.switching?.stpPriority ?? 32768}.${n.routerId}`;
-  const sortedRoots = [...stpNodes].sort(compareBridgeIds);
-  const rootNode = sortedRoots[0];
-  const rootBid = bridgeId(rootNode);
-
-  // Dijkstra from rootNode over active L2 links
-  const dist = new Map<string, number>([[rootNode.id, 0]]);
-  const rootLinkByNode = new Map<string, { linkId: string; localIfId: string }>();
   const l2Links = topology.links.filter((l) => {
     if (l.adminDown || l.linkType !== 'layer2') return false;
     const srcNode = nodeMap.get(l.sourceNodeId);
@@ -172,114 +165,152 @@ export function computeStpAndLldp(
     return true;
   });
 
-  const visited = new Set<string>();
-  while (visited.size < stpNodes.length) {
-    let bestNode: NodeConfig | undefined;
-    let bestCost = Infinity;
-    for (const n of stpNodes) {
-      if (visited.has(n.id)) continue;
-      const d = dist.get(n.id) ?? Infinity;
-      if (d < bestCost) {
-        bestCost = d;
-        bestNode = n;
+  // Partition STP nodes into connected L2 domains so disconnected sites each elect their own Root Bridge
+  const assignedToComponent = new Set<string>();
+  const components: NodeConfig[][] = [];
+  for (const start of stpNodes) {
+    if (assignedToComponent.has(start.id)) continue;
+    const comp: NodeConfig[] = [];
+    const queue: NodeConfig[] = [start];
+    assignedToComponent.add(start.id);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      comp.push(cur);
+      for (const link of l2Links) {
+        const nbrId =
+          link.sourceNodeId === cur.id
+            ? link.targetNodeId
+            : link.targetNodeId === cur.id
+              ? link.sourceNodeId
+              : null;
+        if (!nbrId || assignedToComponent.has(nbrId)) continue;
+        const nbr = nodeMap.get(nbrId);
+        if (nbr && nbr.switching?.stpEnabled && !nbr.adminDown) {
+          assignedToComponent.add(nbrId);
+          queue.push(nbr);
+        }
       }
     }
-    if (!bestNode || bestCost === Infinity) break;
-    visited.add(bestNode.id);
-
-    for (const link of l2Links) {
-      const isSrc = link.sourceNodeId === bestNode.id;
-      const isDst = link.targetNodeId === bestNode.id;
-      if (!isSrc && !isDst) continue;
-      const nbrId = isSrc ? link.targetNodeId : link.sourceNodeId;
-      const nbr = nodeMap.get(nbrId);
-      if (!nbr || visited.has(nbrId)) continue;
-      const nbrIfId = isSrc ? link.targetInterfaceId : link.sourceInterfaceId;
-      const newCost = bestCost + getStpPortCost(nbr, nbrIfId);
-      if (newCost < (dist.get(nbrId) ?? Infinity)) {
-        dist.set(nbrId, newCost);
-        rootLinkByNode.set(nbrId, { linkId: link.id, localIfId: nbrIfId });
-      }
-    }
+    components.push(comp);
   }
 
-  // Assign port roles: Root, Designated (lower root path cost / bridgeId), Alternate (Blocking)
-  for (const n of stpNodes) {
-    const isRoot = n.id === rootNode.id;
-    const ports: StpNodeState['ports'] = [];
-    const myCost = dist.get(n.id) ?? Infinity;
-    const myRootLink = rootLinkByNode.get(n.id);
+  for (const compNodes of components) {
+    const compIds = new Set(compNodes.map((n) => n.id));
+    const compLinks = l2Links.filter((l) => compIds.has(l.sourceNodeId) && compIds.has(l.targetNodeId));
+    const sortedRoots = [...compNodes].sort(compareBridgeIds);
+    const rootNode = sortedRoots[0];
+    const rootBid = bridgeId(rootNode);
 
-    for (const link of l2Links) {
-      const isSrc = link.sourceNodeId === n.id;
-      const isDst = link.targetNodeId === n.id;
-      if (!isSrc && !isDst) continue;
-      const localIfId = isSrc ? link.sourceInterfaceId : link.targetInterfaceId;
-      const localIf = n.interfaces.find((i) => i.id === localIfId);
-      const remoteNode = nodeMap.get(isSrc ? link.targetNodeId : link.sourceNodeId);
-      if (!localIf || !remoteNode) continue;
-
-      const remoteIfId = isSrc ? link.targetInterfaceId : link.sourceInterfaceId;
-      const remoteIf = remoteNode.interfaces.find((i) => i.id === remoteIfId);
-      const sameLagAs = (otherLinkId: string | undefined): boolean => {
-        if (!otherLinkId || !remoteIf) return false;
-        if (localIf.lacpGroup === undefined || remoteIf.lacpGroup === undefined) return false;
-        if (!negotiateLagPair(localIf, remoteIf).ok) return false;
-        const other = l2Links.find((l) => l.id === otherLinkId);
-        if (!other) return false;
-        const oSrc = other.sourceNodeId === n.id;
-        const oDst = other.targetNodeId === n.id;
-        if (!oSrc && !oDst) return false;
-        const oRemoteId = oSrc ? other.targetNodeId : other.sourceNodeId;
-        if (oRemoteId !== remoteNode.id) return false;
-        const oLocalIf = n.interfaces.find(
-          (i) => i.id === (oSrc ? other.sourceInterfaceId : other.targetInterfaceId)
-        );
-        const oRemoteIf = remoteNode.interfaces.find(
-          (i) => i.id === (oSrc ? other.targetInterfaceId : other.sourceInterfaceId)
-        );
-        return (
-          oLocalIf?.lacpGroup === localIf.lacpGroup &&
-          oRemoteIf?.lacpGroup === remoteIf.lacpGroup &&
-          negotiateLagPair(oLocalIf, oRemoteIf).ok
-        );
-      };
-
-      if (
-        !isRoot &&
-        ((myRootLink?.linkId === link.id && myRootLink.localIfId === localIfId) ||
-          sameLagAs(myRootLink?.linkId))
-      ) {
-        ports.push({ interfaceName: localIf.name, role: 'Root', state: 'Forwarding' });
-        continue;
+    const dist = new Map<string, number>([[rootNode.id, 0]]);
+    const rootLinkByNode = new Map<string, { linkId: string; localIfId: string }>();
+    const visited = new Set<string>();
+    while (visited.size < compNodes.length) {
+      let bestNode: NodeConfig | undefined;
+      let bestCost = Infinity;
+      for (const n of compNodes) {
+        if (visited.has(n.id)) continue;
+        const d = dist.get(n.id) ?? Infinity;
+        if (d < bestCost) {
+          bestCost = d;
+          bestNode = n;
+        }
       }
+      if (!bestNode || bestCost === Infinity) break;
+      visited.add(bestNode.id);
 
-      const remoteRootLink = rootLinkByNode.get(remoteNode.id);
-      if (remoteRootLink?.linkId === link.id || sameLagAs(remoteRootLink?.linkId)) {
-        ports.push({ interfaceName: localIf.name, role: 'Designated', state: 'Forwarding' });
-        continue;
-      }
-
-      const remoteCost = dist.get(remoteNode.id) ?? Infinity;
-      const iWinDesignated =
-        myCost < remoteCost ||
-        (myCost === remoteCost && compareBridgeIds(n, remoteNode) < 0);
-      if (iWinDesignated) {
-        ports.push({ interfaceName: localIf.name, role: 'Designated', state: 'Forwarding' });
-      } else {
-        ports.push({ interfaceName: localIf.name, role: 'Alternate', state: 'Blocking' });
-        blockedL2Ports.add(`${n.id}|${localIf.id}`);
-        warnings.push(
-          `STP Alternate/Blocking on ${n.hostname}:${localIf.name} (Root: ${rootNode.hostname})`
-        );
+      for (const link of compLinks) {
+        const isSrc = link.sourceNodeId === bestNode.id;
+        const isDst = link.targetNodeId === bestNode.id;
+        if (!isSrc && !isDst) continue;
+        const nbrId = isSrc ? link.targetNodeId : link.sourceNodeId;
+        const nbr = nodeMap.get(nbrId);
+        if (!nbr || visited.has(nbrId)) continue;
+        const nbrIfId = isSrc ? link.targetInterfaceId : link.sourceInterfaceId;
+        const newCost = bestCost + getStpPortCost(nbr, nbrIfId);
+        if (newCost < (dist.get(nbrId) ?? Infinity)) {
+          dist.set(nbrId, newCost);
+          rootLinkByNode.set(nbrId, { linkId: link.id, localIfId: nbrIfId });
+        }
       }
     }
 
-    stpByNode.set(n.id, {
-      rootBridgeId: rootBid,
-      isRoot,
-      ports,
-    });
+    for (const n of compNodes) {
+      const isRoot = n.id === rootNode.id;
+      const ports: StpNodeState['ports'] = [];
+      const myCost = dist.get(n.id) ?? Infinity;
+      const myRootLink = rootLinkByNode.get(n.id);
+
+      for (const link of compLinks) {
+        const isSrc = link.sourceNodeId === n.id;
+        const isDst = link.targetNodeId === n.id;
+        if (!isSrc && !isDst) continue;
+        const localIfId = isSrc ? link.sourceInterfaceId : link.targetInterfaceId;
+        const localIf = n.interfaces.find((i) => i.id === localIfId);
+        const remoteNode = nodeMap.get(isSrc ? link.targetNodeId : link.sourceNodeId);
+        if (!localIf || !remoteNode) continue;
+
+        const remoteIfId = isSrc ? link.targetInterfaceId : link.sourceInterfaceId;
+        const remoteIf = remoteNode.interfaces.find((i) => i.id === remoteIfId);
+        const sameLagAs = (otherLinkId: string | undefined): boolean => {
+          if (!otherLinkId || !remoteIf) return false;
+          if (localIf.lacpGroup === undefined || remoteIf.lacpGroup === undefined) return false;
+          if (!negotiateLagPair(localIf, remoteIf).ok) return false;
+          const other = compLinks.find((l) => l.id === otherLinkId);
+          if (!other) return false;
+          const oSrc = other.sourceNodeId === n.id;
+          const oDst = other.targetNodeId === n.id;
+          if (!oSrc && !oDst) return false;
+          const oRemoteId = oSrc ? other.targetNodeId : other.sourceNodeId;
+          if (oRemoteId !== remoteNode.id) return false;
+          const oLocalIf = n.interfaces.find(
+            (i) => i.id === (oSrc ? other.sourceInterfaceId : other.targetInterfaceId)
+          );
+          const oRemoteIf = remoteNode.interfaces.find(
+            (i) => i.id === (oSrc ? other.targetInterfaceId : other.sourceInterfaceId)
+          );
+          return (
+            oLocalIf?.lacpGroup === localIf.lacpGroup &&
+            oRemoteIf?.lacpGroup === remoteIf.lacpGroup &&
+            negotiateLagPair(oLocalIf, oRemoteIf).ok
+          );
+        };
+
+        if (
+          !isRoot &&
+          ((myRootLink?.linkId === link.id && myRootLink.localIfId === localIfId) ||
+            sameLagAs(myRootLink?.linkId))
+        ) {
+          ports.push({ interfaceName: localIf.name, role: 'Root', state: 'Forwarding' });
+          continue;
+        }
+
+        const remoteRootLink = rootLinkByNode.get(remoteNode.id);
+        if (remoteRootLink?.linkId === link.id || sameLagAs(remoteRootLink?.linkId)) {
+          ports.push({ interfaceName: localIf.name, role: 'Designated', state: 'Forwarding' });
+          continue;
+        }
+
+        const remoteCost = dist.get(remoteNode.id) ?? Infinity;
+        const iWinDesignated =
+          myCost < remoteCost ||
+          (myCost === remoteCost && compareBridgeIds(n, remoteNode) < 0);
+        if (iWinDesignated) {
+          ports.push({ interfaceName: localIf.name, role: 'Designated', state: 'Forwarding' });
+        } else {
+          ports.push({ interfaceName: localIf.name, role: 'Alternate', state: 'Blocking' });
+          blockedL2Ports.add(`${n.id}|${localIf.id}`);
+          warnings.push(
+            `STP Alternate/Blocking on ${n.hostname}:${localIf.name} (Root: ${rootNode.hostname})`
+          );
+        }
+      }
+
+      stpByNode.set(n.id, {
+        rootBridgeId: rootBid,
+        isRoot,
+        ports,
+      });
+    }
   }
 
   return { stpByNode, lldpByNode, blockedL2Ports };
@@ -401,7 +432,7 @@ export function computeMulticastMroute(
 ): Map<string, MrouteEntry[]> {
   const result = new Map<string, MrouteEntry[]>();
   for (const node of topology.nodes) {
-    if (!node.multicast?.pimEnabled) continue;
+    if (node.adminDown || !node.multicast?.pimEnabled) continue;
     const rib = finalRibByNode.get(node.id) ?? [];
     const entries: MrouteEntry[] = [];
     const rp = node.multicast.rpAddress;
@@ -428,7 +459,7 @@ export function computeMulticastMroute(
         oifs.add(igmpIface.name);
       }
       for (const iface of node.interfaces) {
-        if (!iface.shutdown && iface.pimSparse && iface.name !== rpfInterface) {
+        if (!iface.shutdown && iface.pimSparse && (iface.vrf || 'default') === groupVrf && iface.name !== rpfInterface) {
           oifs.add(iface.name);
         }
       }

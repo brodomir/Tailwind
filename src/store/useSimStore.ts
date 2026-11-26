@@ -93,10 +93,10 @@ function normalizeTopology(t: TopologyState): TopologyState {
         : { enabled: false, networks: [] },
       bgp: n.bgp
         ? {
-            ...n.bgp,
-            peers: Array.isArray(n.bgp.peers) ? n.bgp.peers : [],
-            networks: Array.isArray(n.bgp.networks) ? n.bgp.networks : [],
-          }
+          ...n.bgp,
+          peers: Array.isArray(n.bgp.peers) ? n.bgp.peers : [],
+          networks: Array.isArray(n.bgp.networks) ? n.bgp.networks : [],
+        }
         : { enabled: false, asn: 65000, peers: [], networks: [] },
       redistributions: Array.isArray(n.redistributions) ? n.redistributions : [],
       prefixLists: Array.isArray(n.prefixLists) ? n.prefixLists : [],
@@ -208,6 +208,7 @@ interface SimStore {
   updateNode: (nodeId: string, patch: Partial<NodeConfig>) => void;
   updateNodePosition: (nodeId: string, position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
+  deleteSelection: (nodeIds: string[], linkIds: string[]) => void;
 
   addInterface: (nodeId: string, iface: InterfaceConfig) => void;
   updateInterface: (nodeId: string, ifaceId: string, patch: Partial<InterfaceConfig>) => void;
@@ -235,18 +236,18 @@ export const useSimStore = create<SimStore>((set, get) => {
       simResult,
       traceResult: state.traceResult
         ? tracePacket(
-            topology,
-            simResult,
-            state.traceSrcNodeId,
-            state.traceDstIp,
-            state.traceVrf,
-            {
-              srcIp: state.traceSrcIp,
-              srcInterfaceId: state.traceSrcInterfaceId,
-              protocol: state.traceProto,
-              dstPort: state.tracePort,
-            }
-          )
+          topology,
+          simResult,
+          state.traceSrcNodeId,
+          state.traceDstIp,
+          state.traceVrf,
+          {
+            srcIp: state.traceSrcIp,
+            srcInterfaceId: state.traceSrcInterfaceId,
+            protocol: state.traceProto,
+            dstPort: state.tracePort,
+          }
+        )
         : null,
     });
   };
@@ -310,22 +311,22 @@ export const useSimStore = create<SimStore>((set, get) => {
       fhrpGroups: node.fhrpGroups?.map((g) => ({ ...g, interfaceId: mapId(g.interfaceId) ?? g.interfaceId })),
       multicast: node.multicast
         ? {
-            ...node.multicast,
-            igmpGroups: node.multicast.igmpGroups?.map((g) => ({
-              ...g,
-              interfaceId: mapId(g.interfaceId) ?? g.interfaceId,
-            })),
-          }
+          ...node.multicast,
+          igmpGroups: node.multicast.igmpGroups?.map((g) => ({
+            ...g,
+            interfaceId: mapId(g.interfaceId) ?? g.interfaceId,
+          })),
+        }
         : undefined,
       vpc: node.vpc ? { ...node.vpc, peerLinkInterfaceId: mapId(node.vpc.peerLinkInterfaceId) } : undefined,
       mlag: node.mlag ? { ...node.mlag, peerLinkInterfaceId: mapId(node.mlag.peerLinkInterfaceId) } : undefined,
       panHa: node.panHa
         ? {
-            ...node.panHa,
-            ha1InterfaceId: mapId(node.panHa.ha1InterfaceId),
-            ha2InterfaceId: mapId(node.panHa.ha2InterfaceId),
-            ha3HsciInterfaceId: mapId(node.panHa.ha3HsciInterfaceId),
-          }
+          ...node.panHa,
+          ha1InterfaceId: mapId(node.panHa.ha1InterfaceId),
+          ha2InterfaceId: mapId(node.panHa.ha2InterfaceId),
+          ha3HsciInterfaceId: mapId(node.panHa.ha3HsciInterfaceId),
+        }
         : undefined,
       fortiHa: node.fortiHa ? { ...node.fortiHa, hbInterfaceId: mapId(node.fortiHa.hbInterfaceId) } : undefined,
       forcepointCluster: node.forcepointCluster
@@ -334,27 +335,82 @@ export const useSimStore = create<SimStore>((set, get) => {
     };
   };
 
-  const stripDeletedInterfaceId = (node: NodeConfig, ifaceId: string): NodeConfig => {
+  const stripDeletedInterfaceId = (
+    node: NodeConfig,
+    ifaceId: string,
+    deletedNameOverride?: string
+  ): NodeConfig => {
     const clearIf = (id?: string) => (id === ifaceId ? undefined : id);
+    const deletedName = deletedNameOverride ?? node.interfaces.find((i) => i.id === ifaceId)?.name;
     return {
       ...node,
-      interfaces: node.interfaces.filter((i) => i.id !== ifaceId),
+      interfaces: node.interfaces
+        .filter((i) => i.id !== ifaceId)
+        .map((i) =>
+          deletedName
+            ? {
+                ...i,
+                unnumberedSource: i.unnumberedSource === deletedName ? undefined : i.unnumberedSource,
+                parentInterface: i.parentInterface === deletedName ? undefined : i.parentInterface,
+                tlocExtension: i.tlocExtension === deletedName ? undefined : i.tlocExtension,
+              }
+            : i
+        ),
+      staticRoutes: deletedName
+        ? node.staticRoutes.map((sr) =>
+          sr.interfaceName === deletedName ? { ...sr, interfaceName: undefined } : sr
+        )
+        : node.staticRoutes,
+      bgp: deletedName
+        ? {
+          ...node.bgp,
+          peers: node.bgp.peers.map((p) =>
+            p.updateSource === deletedName ? { ...p, updateSource: undefined } : p
+          ),
+        }
+        : node.bgp,
+      pbrRules: deletedName
+        ? node.pbrRules?.map((r) => ({
+          ...r,
+          ingressInterface: r.ingressInterface === deletedName ? undefined : r.ingressInterface,
+          interfaceName: r.interfaceName === deletedName ? undefined : r.interfaceName,
+        }))
+        : node.pbrRules,
+      sdwanSla:
+        deletedName && node.sdwanSla
+          ? {
+            ...node.sdwanSla,
+            rules: node.sdwanSla.rules.map((r) => ({
+              ...r,
+              preferredMembers: r.preferredMembers.filter((m) => m !== deletedName),
+            })),
+          }
+          : node.sdwanSla,
       fhrpGroups: node.fhrpGroups?.filter((g) => g.interfaceId !== ifaceId),
       multicast: node.multicast
         ? {
-            ...node.multicast,
-            igmpGroups: node.multicast.igmpGroups?.filter((g) => g.interfaceId !== ifaceId),
-          }
+          ...node.multicast,
+          igmpGroups: node.multicast.igmpGroups?.filter((g) => g.interfaceId !== ifaceId),
+        }
         : undefined,
       vpc: node.vpc ? { ...node.vpc, peerLinkInterfaceId: clearIf(node.vpc.peerLinkInterfaceId) } : undefined,
-      mlag: node.mlag ? { ...node.mlag, peerLinkInterfaceId: clearIf(node.mlag.peerLinkInterfaceId) } : undefined,
+      mlag: node.mlag
+        ? {
+            ...node.mlag,
+            peerLinkInterfaceId: clearIf(node.mlag.peerLinkInterfaceId),
+            localInterface:
+              deletedName && node.mlag.localInterface === deletedName
+                ? undefined
+                : node.mlag.localInterface,
+          }
+        : undefined,
       panHa: node.panHa
         ? {
-            ...node.panHa,
-            ha1InterfaceId: clearIf(node.panHa.ha1InterfaceId),
-            ha2InterfaceId: clearIf(node.panHa.ha2InterfaceId),
-            ha3HsciInterfaceId: clearIf(node.panHa.ha3HsciInterfaceId),
-          }
+          ...node.panHa,
+          ha1InterfaceId: clearIf(node.panHa.ha1InterfaceId),
+          ha2InterfaceId: clearIf(node.panHa.ha2InterfaceId),
+          ha3HsciInterfaceId: clearIf(node.panHa.ha3HsciInterfaceId),
+        }
         : undefined,
       fortiHa: node.fortiHa ? { ...node.fortiHa, hbInterfaceId: clearIf(node.fortiHa.hbInterfaceId) } : undefined,
       forcepointCluster: node.forcepointCluster
@@ -622,9 +678,18 @@ export const useSimStore = create<SimStore>((set, get) => {
           };
         });
 
+        const usedIfIds = new Set(mergedIfaces.map((i) => i.id));
         for (const pIf of match.interfaces) {
           if (!usedParsedIds.has(pIf.id)) {
-            mergedIfaces.push(pIf);
+            let finalId = pIf.id;
+            if (usedIfIds.has(finalId)) {
+              let suffix = 1;
+              while (usedIfIds.has(`${pIf.id}-${suffix}`)) suffix++;
+              finalId = `${pIf.id}-${suffix}`;
+              parsedIdMap.set(pIf.id, finalId);
+            }
+            usedIfIds.add(finalId);
+            mergedIfaces.push(finalId === pIf.id ? pIf : { ...pIf, id: finalId });
           }
         }
 
@@ -633,6 +698,8 @@ export const useSimStore = create<SimStore>((set, get) => {
           ...existing,
           vendor: remappedMatch.vendor,
           routerId: remappedMatch.routerId || existing.routerId,
+          vrfRouterIds: remappedMatch.vrfRouterIds ?? existing.vrfRouterIds,
+          maxPaths: remappedMatch.maxPaths ?? existing.maxPaths,
           vrfs: remappedMatch.vrfs?.length ? remappedMatch.vrfs : existing.vrfs,
           interfaces: mergedIfaces,
           staticRoutes: remappedMatch.staticRoutes,
@@ -659,14 +726,32 @@ export const useSimStore = create<SimStore>((set, get) => {
           fortiHa: remappedMatch.fortiHa ?? existing.fortiHa,
           forcepointCluster: remappedMatch.forcepointCluster ?? existing.forcepointCluster,
           sdwan: remappedMatch.sdwan ?? existing.sdwan,
+          sdwanSla: remappedMatch.sdwanSla ?? existing.sdwanSla,
           lisp: remappedMatch.lisp ?? existing.lisp,
+          mpls: remappedMatch.mpls ?? existing.mpls,
+          switching: remappedMatch.switching ?? existing.switching,
+          multicast: remappedMatch.multicast ?? existing.multicast,
+          timing: remappedMatch.timing ?? existing.timing,
+          telemetry: remappedMatch.telemetry ?? existing.telemetry,
+          nat64Rules: remappedMatch.nat64Rules ?? existing.nat64Rules,
+          vplsInstances: remappedMatch.vplsInstances ?? existing.vplsInstances,
+          oam: remappedMatch.oam ?? existing.oam,
         };
       });
 
       if (matchedCount === 0) return 0;
       const next: TopologyState = { ...topology, nodes: nextNodes };
+      const { traceSrcNodeId, traceVrf } = get();
+      const updatedSrc = nextNodes.find((n) => n.id === traceSrcNodeId);
+      const validSrcVrfs = new Set([
+        'default',
+        ...(updatedSrc?.vrfs ?? []),
+        ...(updatedSrc?.interfaces.map((i) => i.vrf || 'default') ?? []),
+      ]);
+      const nextTraceVrf = updatedSrc && !validSrcVrfs.has(traceVrf) ? 'default' : traceVrf;
       set({
         topology: next,
+        traceVrf: nextTraceVrf,
         past: [...get().past.slice(-29), topology],
         future: [],
       });
@@ -717,25 +802,43 @@ export const useSimStore = create<SimStore>((set, get) => {
             usedParsedIds.add(pIf.id);
             if (pIf.id !== exIf.id) parsedIdMap.set(pIf.id, exIf.id);
             return {
-              ...exIf,
               ...pIf,
               id: exIf.id,
               vrf: pIf.vrf || 'default',
+              qosPolicy: pIf.qosPolicy ?? exIf.qosPolicy,
+              dot1xState: pIf.dot1xState ?? exIf.dot1xState,
+              speedMbps: pIf.speedMbps ?? exIf.speedMbps,
+              tlocColor: pIf.tlocColor ?? exIf.tlocColor,
+              tlocEncap: pIf.tlocEncap ?? exIf.tlocEncap,
+              tlocExtension: pIf.tlocExtension ?? exIf.tlocExtension,
             };
           });
 
+        const usedIfIds = new Set(mergedIfaces.map((i) => i.id));
         for (const pIf of parsedNode.interfaces) {
           if (!usedParsedIds.has(pIf.id)) {
-            mergedIfaces.push(pIf);
+            let finalId = pIf.id;
+            if (usedIfIds.has(finalId)) {
+              let suffix = 1;
+              while (usedIfIds.has(`${pIf.id}-${suffix}`)) suffix++;
+              finalId = `${pIf.id}-${suffix}`;
+              parsedIdMap.set(pIf.id, finalId);
+            }
+            usedIfIds.add(finalId);
+            mergedIfaces.push(finalId === pIf.id ? pIf : { ...pIf, id: finalId });
           }
         }
 
         const remappedParsed = remapNodeInterfaceIds(parsedNode, parsedIdMap);
-        return {
+        const keptIfIds = new Set(mergedIfaces.map((i) => i.id));
+        const removedIfIds = existing.interfaces.map((i) => i.id).filter((id) => !keptIfIds.has(id));
+        let mergedNode: NodeConfig = {
           ...existing,
           hostname: remappedParsed.hostname || existing.hostname,
-          vendor: remappedParsed.vendor || existing.vendor,
+          vendor: existing.vendor || remappedParsed.vendor,
           routerId: remappedParsed.routerId || existing.routerId,
+          vrfRouterIds: remappedParsed.vrfRouterIds,
+          maxPaths: remappedParsed.maxPaths ?? existing.maxPaths,
           vrfs: remappedParsed.vrfs?.length ? remappedParsed.vrfs : ['default'],
           interfaces: mergedIfaces,
           staticRoutes: remappedParsed.staticRoutes,
@@ -762,13 +865,40 @@ export const useSimStore = create<SimStore>((set, get) => {
           fortiHa: remappedParsed.fortiHa ?? existing.fortiHa,
           forcepointCluster: remappedParsed.forcepointCluster ?? existing.forcepointCluster,
           sdwan: remappedParsed.sdwan ?? existing.sdwan,
+          sdwanSla: remappedParsed.sdwanSla ?? existing.sdwanSla,
           lisp: remappedParsed.lisp ?? existing.lisp,
+          mpls: remappedParsed.mpls ?? existing.mpls,
+          switching: remappedParsed.switching ?? existing.switching,
+          multicast: remappedParsed.multicast ?? existing.multicast,
+          timing: remappedParsed.timing ?? existing.timing,
+          telemetry: remappedParsed.telemetry ?? existing.telemetry,
+          nat64Rules: remappedParsed.nat64Rules ?? existing.nat64Rules,
+          vplsInstances: remappedParsed.vplsInstances ?? existing.vplsInstances,
+          oam: remappedParsed.oam ?? existing.oam,
         };
+        for (const rid of removedIfIds) {
+          const oldName = existing.interfaces.find((i) => i.id === rid)?.name;
+          mergedNode = stripDeletedInterfaceId(mergedNode, rid, oldName);
+        }
+        return mergedNode;
       });
 
       const next: TopologyState = { ...topology, nodes: nextNodes };
+      const { traceSrcNodeId, traceSrcInterfaceId, traceVrf } = get();
+      const updatedTarget = nextNodes.find((n) => n.id === nodeId);
+      const nextTraceSrcInterfaceId =
+        traceSrcNodeId === nodeId &&
+          traceSrcInterfaceId &&
+          !updatedTarget?.interfaces.some((i) => i.id === traceSrcInterfaceId)
+          ? undefined
+          : traceSrcInterfaceId;
+      const targetVrfs = new Set(['default', ...(updatedTarget?.vrfs ?? [])]);
+      const nextTraceVrf =
+        traceSrcNodeId === nodeId && !targetVrfs.has(traceVrf) ? 'default' : traceVrf;
       set({
         topology: next,
+        traceSrcInterfaceId: nextTraceSrcInterfaceId,
+        traceVrf: nextTraceVrf,
         past: [...past, structuredClone(topology)].slice(-30),
         future: [],
       });
@@ -952,11 +1082,11 @@ export const useSimStore = create<SimStore>((set, get) => {
         const updated = workspaces.map((w) =>
           w.id === activePresetId
             ? {
-                ...w,
-                topology: structuredClone(topology),
-                pathTests: structuredClone(pathTests),
-                updatedAt: Date.now(),
-              }
+              ...w,
+              topology: structuredClone(topology),
+              pathTests: structuredClone(pathTests),
+              updatedAt: Date.now(),
+            }
             : w
         );
         persistWorkspaces(updated);
@@ -1071,7 +1201,6 @@ export const useSimStore = create<SimStore>((set, get) => {
         traceResult: res,
         traceSrcNodeId: res.srcNodeId,
         traceSrcInterfaceId: res.srcInterfaceId,
-        traceSrcIp: res.srcIp,
         traceDstIp: res.dstIp,
         traceVrf: res.vrf,
       }),
@@ -1102,9 +1231,9 @@ export const useSimStore = create<SimStore>((set, get) => {
       const stagger = ((idx % 5) - 2) * 24;
       const position = viewportCenter
         ? {
-            x: Math.round(viewportCenter.x - 102 + stagger),
-            y: Math.round(viewportCenter.y - 45 + stagger),
-          }
+          x: Math.round(viewportCenter.x - 102 + stagger),
+          y: Math.round(viewportCenter.y - 45 + stagger),
+        }
         : { x: 260 + (idx % 4) * 60, y: 120 + (idx % 3) * 60 };
       const isCloud = meta.category === 'cloud';
       const newNode: NodeConfig = {
@@ -1169,12 +1298,25 @@ export const useSimStore = create<SimStore>((set, get) => {
     },
 
     updateNode: (nodeId, patch) => {
-      const { topology, past } = get();
+      const { topology, past, traceSrcNodeId, traceVrf } = get();
       const next: TopologyState = {
         ...topology,
         nodes: topology.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
       };
-      set({ topology: next, past: [...past, structuredClone(topology)].slice(-30), future: [] });
+      const updatedNode = next.nodes.find((n) => n.id === nodeId);
+      const validVrfs = new Set([
+        'default',
+        ...(updatedNode?.vrfs ?? []),
+        ...(updatedNode?.interfaces.map((i) => i.vrf || 'default') ?? []),
+      ]);
+      const nextTraceVrf =
+        traceSrcNodeId === nodeId && !validVrfs.has(traceVrf) ? 'default' : traceVrf;
+      set({
+        topology: next,
+        traceVrf: nextTraceVrf,
+        past: [...past, structuredClone(topology)].slice(-30),
+        future: [],
+      });
       triggerSolve(next);
     },
 
@@ -1211,6 +1353,38 @@ export const useSimStore = create<SimStore>((set, get) => {
       triggerSolve(next);
     },
 
+    deleteSelection: (nodeIds, linkIds) => {
+      const { topology, selectedNodeId, traceSrcNodeId, traceSrcInterfaceId, traceSrcIp, traceVrf, past } = get();
+      const nodeSet = new Set(nodeIds);
+      const linkSet = new Set(linkIds);
+      const hasAnyTarget =
+        topology.nodes.some((n) => nodeSet.has(n.id)) ||
+        topology.links.some((l) => linkSet.has(l.id));
+      if (!hasAnyTarget) return;
+      const next: TopologyState = {
+        ...topology,
+        nodes: topology.nodes.filter((n) => !nodeSet.has(n.id)),
+        links: topology.links.filter(
+          (l) => !linkSet.has(l.id) && !nodeSet.has(l.sourceNodeId) && !nodeSet.has(l.targetNodeId)
+        ),
+      };
+      const deletedTraceSrc = nodeSet.has(traceSrcNodeId);
+      set({
+        topology: next,
+        selectedNodeId:
+          selectedNodeId && nodeSet.has(selectedNodeId)
+            ? (next.nodes[0]?.id ?? null)
+            : selectedNodeId,
+        traceSrcNodeId: deletedTraceSrc ? (next.nodes[0]?.id ?? '') : traceSrcNodeId,
+        traceSrcInterfaceId: deletedTraceSrc ? undefined : traceSrcInterfaceId,
+        traceSrcIp: deletedTraceSrc ? undefined : traceSrcIp,
+        traceVrf: deletedTraceSrc ? 'default' : traceVrf,
+        past: [...past, structuredClone(topology)].slice(-30),
+        future: [],
+      });
+      triggerSolve(next);
+    },
+
     addInterface: (nodeId, iface) => {
       const { topology, past } = get();
       const next: TopologyState = {
@@ -1227,16 +1401,76 @@ export const useSimStore = create<SimStore>((set, get) => {
       const { topology, past } = get();
       const next: TopologyState = {
         ...topology,
-        nodes: topology.nodes.map((n) =>
-          n.id === nodeId
-            ? {
-                ...n,
-                interfaces: n.interfaces.map((i) =>
-                  i.id === ifaceId ? { ...i, ...patch } : i
+        nodes: topology.nodes.map((n) => {
+          if (n.id !== nodeId) return n;
+          const oldIf = n.interfaces.find((i) => i.id === ifaceId);
+          const renamed =
+            oldIf && patch.name !== undefined && patch.name !== oldIf.name
+              ? { oldName: oldIf.name, newName: patch.name }
+              : null;
+          return {
+            ...n,
+            interfaces: n.interfaces.map((i) => {
+              const base = i.id === ifaceId ? { ...i, ...patch } : i;
+              if (!renamed) return base;
+              return {
+                ...base,
+                unnumberedSource:
+                  base.unnumberedSource === renamed.oldName
+                    ? renamed.newName
+                    : base.unnumberedSource,
+                parentInterface:
+                  base.parentInterface === renamed.oldName
+                    ? renamed.newName
+                    : base.parentInterface,
+                tlocExtension:
+                  base.tlocExtension === renamed.oldName ? renamed.newName : base.tlocExtension,
+              };
+            }),
+            mlag:
+              renamed && n.mlag && n.mlag.localInterface === renamed.oldName
+                ? { ...n.mlag, localInterface: renamed.newName }
+                : n.mlag,
+            staticRoutes: renamed
+              ? n.staticRoutes.map((sr) =>
+                sr.interfaceName === renamed.oldName
+                  ? { ...sr, interfaceName: renamed.newName }
+                  : sr
+              )
+              : n.staticRoutes,
+            bgp: renamed
+              ? {
+                ...n.bgp,
+                peers: n.bgp.peers.map((p) =>
+                  p.updateSource === renamed.oldName
+                    ? { ...p, updateSource: renamed.newName }
+                    : p
                 ),
               }
-            : n
-        ),
+              : n.bgp,
+            pbrRules: renamed
+              ? n.pbrRules?.map((r) => ({
+                ...r,
+                ingressInterface:
+                  r.ingressInterface === renamed.oldName ? renamed.newName : r.ingressInterface,
+                interfaceName:
+                  r.interfaceName === renamed.oldName ? renamed.newName : r.interfaceName,
+              }))
+              : n.pbrRules,
+            sdwanSla:
+              renamed && n.sdwanSla
+                ? {
+                  ...n.sdwanSla,
+                  rules: n.sdwanSla.rules.map((r) => ({
+                    ...r,
+                    preferredMembers: r.preferredMembers.map((m) =>
+                      m === renamed.oldName ? renamed.newName : m
+                    ),
+                  })),
+                }
+                : n.sdwanSla,
+          };
+        }),
       };
       set({ topology: next, past: [...past, structuredClone(topology)].slice(-30), future: [] });
       triggerSolve(next);

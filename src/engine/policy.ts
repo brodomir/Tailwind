@@ -101,8 +101,8 @@ export function matchPrefixList(
 
 function safeCompileRegex(pattern: string): RegExp | null {
   if (!pattern || pattern.length > 128) return null;
-  if (/(\+|\*|\{[^}]+\})\s*(\+|\*|\?|\{)/.test(pattern)) return null;
-  if (/\([^)]*[+*][^)]*\)\s*[+*?]/.test(pattern)) return null;
+  if (/(\+|\*|\{[^}]+\})\s*(\+|\*|\{)/.test(pattern)) return null;
+  if (/\([^)]*[+*][^)]*\)\s*[+*]/.test(pattern)) return null;
   try {
     return new RegExp(pattern);
   } catch {
@@ -139,7 +139,8 @@ export function evaluateRouteMap(
       matched = Boolean(ctx?.largeCommunities?.includes(targetLarge));
     }
     if (matched && entry.matchAsPathRegex) {
-      const rx = safeCompileRegex(entry.matchAsPathRegex);
+      const normalizedPattern = entry.matchAsPathRegex.replace(/_/g, '(?:^| |$)');
+      const rx = safeCompileRegex(normalizedPattern);
       matched = rx ? rx.test((ctx?.asPath ?? []).join(' ')) : false;
     }
     if (matched && entry.matchRpki) {

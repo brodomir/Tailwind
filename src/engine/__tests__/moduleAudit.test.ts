@@ -891,5 +891,589 @@ end`).nodes[0];
       const azRe = importTopologyFromText(formatRunningConfig(azBh)).nodes[0];
       expect(azRe.cloudConfig?.blackholeCidrs).toContain('192.0.2.0/24');
     });
+
+    it('verifies Pass-5 audit fixes (AS-path _/lazy regex, NAT AF guard, VRF leak loop/chain, FHRP VRF/IPv6, Forcepoint standby, YAML autoFormat, NX-OS/Null0 validator)', () => {
+      // 1. NAT AF guard: IPv4 SNAT with srcCidr='any' must not rewrite IPv6 srcIp
+      const snatV6 = evaluatePostRoutingSnat(
+        [{ id: 'n1', seq: 10, name: 'V4-SNAT', type: 'snat', srcCidr: 'any', dstCidr: 'any', translatedIp: '203.0.113.1' }],
+        '2001:db8:1::10',
+        '2001:db8:2::20'
+      );
+      expect(snatV6.srcIp).toBe('2001:db8:1::10');
+
+      // 2. Bidirectional VRF leak (A <-> B) does not bounce routes back; chained leak (A -> B -> C) preserves origin VRF
+      const vrfNode = makeMinimalNode('vn1', 'VRF-RTR', 'cisco-ios-xe');
+      vrfNode.vrfs = ['default', 'A', 'B', 'C'];
+      vrfNode.interfaces = [
+        { id: 'va', name: 'Gi0/0', cidr: '10.1.0.1/24', vrf: 'A' },
+        { id: 'vb', name: 'Gi0/1', cidr: '10.2.0.1/24', vrf: 'B' },
+        { id: 'vc', name: 'Gi0/2', cidr: '10.3.0.1/24', vrf: 'C' },
+      ];
+      vrfNode.staticRoutes = [{ id: 'vs1', vrf: 'A', prefix: '172.16.0.0/16', nextHop: '10.1.0.2' }];
+      vrfNode.vrfLeaks = [
+        { id: 'l1', fromVrf: 'A', toVrf: 'B' },
+        { id: 'l2', fromVrf: 'B', toVrf: 'A' },
+        { id: 'l3', fromVrf: 'B', toVrf: 'C' },
+      ];
+      const vrfSim = solveTopology({ nodes: [vrfNode], links: [] });
+      const aConn = vrfSim.nodes['vn1'].rib.filter((r) => r.vrf === 'A' && r.prefix === '10.1.0.0' && r.active);
+      expect(aConn).toHaveLength(1);
+      const cChained = vrfSim.nodes['vn1'].rib.find((r) => r.vrf === 'C' && r.prefix === '172.16.0.0' && r.active);
+      expect(cChained).toBeDefined();
+      expect(cChained?.leakedFromVrf).toBe('A');
+
+      // 3. FHRP cross-VRF isolation & IPv6 VIP /128 installation
+      const f1 = makeMinimalNode('fv1', 'F1', 'cisco-ios-xe');
+      f1.vrfs = ['default', 'CUST-A', 'CUST-B'];
+      f1.interfaces = [
+        { id: 'fa', name: 'Gi0/0', cidr: '10.0.0.1/24', vrf: 'CUST-A' },
+        { id: 'fb', name: 'Gi0/1', cidr: '10.0.0.1/24', cidr6: '2001:db8:1::2/64', vrf: 'CUST-B' },
+      ];
+      f1.fhrpGroups = [
+        { id: 'g1', protocol: 'hsrp', groupId: 1, interfaceId: 'fa', virtualIp: '10.0.0.254', priority: 110 },
+        { id: 'g2', protocol: 'hsrp', groupId: 1, interfaceId: 'fb', virtualIp: '10.0.0.254', priority: 100 },
+        { id: 'g3', protocol: 'vrrp', groupId: 6, interfaceId: 'fb', virtualIp: '2001:db8:1::1', priority: 120 },
+      ];
+      const fSim = solveTopology({ nodes: [f1], links: [] });
+      expect(fSim.nodes['fv1'].rib.some((r) => r.vrf === 'CUST-A' && r.prefix === '10.0.0.254' && r.active)).toBe(true);
+      expect(fSim.nodes['fv1'].rib.some((r) => r.vrf === 'CUST-B' && r.prefix === '10.0.0.254' && r.active)).toBe(true);
+      expect(fSim.nodes['fv1'].rib.some((r) => r.af === 6 && r.prefix === '2001:db8:1::1' && r.prefixLen === 128 && r.active)).toBe(true);
+
+      // 4. Forcepoint Cluster standby mode elects Active + Standby
+      const fp1 = makeMinimalNode('fp1', 'FP-1', 'forcepoint-ngfw');
+      fp1.routerId = '10.0.0.1';
+      fp1.interfaces = [{ id: 'fp1-hb', name: 'eth0', cidr: '169.254.1.1/30', vrf: 'default' }];
+      fp1.forcepointCluster = { enabled: true, clusterId: 30, mode: 'standby', heartbeatInterfaceId: 'fp1-hb' };
+      const fp2 = makeMinimalNode('fp2', 'FP-2', 'forcepoint-ngfw');
+      fp2.routerId = '10.0.0.2';
+      fp2.interfaces = [{ id: 'fp2-hb', name: 'eth0', cidr: '169.254.1.2/30', vrf: 'default' }];
+      fp2.forcepointCluster = { enabled: true, clusterId: 30, mode: 'standby', heartbeatInterfaceId: 'fp2-hb' };
+      const fpSim = solveTopology({
+        nodes: [fp1, fp2],
+        links: [{ id: 'fpl1', sourceNodeId: 'fp1', sourceInterfaceId: 'fp1-hb', targetNodeId: 'fp2', targetInterfaceId: 'fp2-hb' }],
+      });
+      expect(fpSim.nodes['fp1'].neighbors?.find((n) => n.protocol === 'ha')?.state).toBe('Active');
+      expect(fpSim.nodes['fp2'].neighbors?.find((n) => n.protocol === 'ha')?.state).toBe('Standby');
+
+      // 5. NX-OS nested BGP & Null0 static routes validate cleanly; autoFormatRunningConfig preserves YAML
+      const nxIssues = validateRunningConfig(`hostname NX1
+router bgp 65001
+  vrf PROD
+    neighbor 10.0.0.2
+      remote-as 65002
+      default-originate
+      soft-reconfiguration inbound
+      allowas-in
+      as-override
+      remove-private-as
+!
+ip route 10.99.0.0 255.255.0.0 Null0`);
+      expect(nxIssues).toHaveLength(0);
+
+      const sampleYaml = topologyToYaml({ nodes: [fp1], links: [] });
+      const formattedYaml = autoFormatRunningConfig(sampleYaml);
+      expect(importTopologyFromText(formattedYaml).nodes[0].hostname).toBe('FP-1');
+    });
+
+    it('verifies recursive zero-bug convergence fixes (STP L2 islands, BGP asOverride & localAs, adminDown RIB, Junos IS-IS, store traceVrf)', () => {
+      // 1. Disconnected STP L2 islands each elect their own Root Bridge without blocking loop-free links
+      const sw1 = makeMinimalNode('sw1', 'SW1', 'cisco-ios-xe');
+      sw1.routerId = '1.1.1.1';
+      sw1.switching = { stpEnabled: true, stpPriority: 32768 };
+      sw1.interfaces = [{ id: 'sw1-i1', name: 'Gi0/1', cidr: '', vrf: 'default' }];
+      const sw2 = makeMinimalNode('sw2', 'SW2', 'cisco-ios-xe');
+      sw2.routerId = '2.2.2.2';
+      sw2.switching = { stpEnabled: true, stpPriority: 32768 };
+      sw2.interfaces = [{ id: 'sw2-i1', name: 'Gi0/1', cidr: '', vrf: 'default' }];
+      const sw3 = makeMinimalNode('sw3', 'SW3', 'cisco-ios-xe');
+      sw3.routerId = '3.3.3.3';
+      sw3.switching = { stpEnabled: true, stpPriority: 32768 };
+      sw3.interfaces = [{ id: 'sw3-i1', name: 'Gi0/1', cidr: '', vrf: 'default' }];
+      const stpSim = solveTopology({
+        nodes: [sw1, sw2, sw3],
+        links: [{ id: 'sl1', sourceNodeId: 'sw2', sourceInterfaceId: 'sw2-i1', targetNodeId: 'sw3', targetInterfaceId: 'sw3-i1', linkType: 'layer2' }],
+      });
+      expect(stpSim.nodes['sw2'].stpState?.isRoot).toBe(true);
+      expect(stpSim.nodes['sw3'].stpState?.ports[0]?.state).toBe('Forwarding');
+
+      // 2. BGP asOverride works without allowAsIn; localAs establishes session cleanly
+      const ce1 = makeMinimalNode('ce1', 'CE1', 'cisco-ios-xe');
+      ce1.routerId = '1.1.1.1';
+      ce1.interfaces = [{ id: 'ce1-i1', name: 'Gi0/0', cidr: '10.1.0.1/30', vrf: 'default' }];
+      ce1.bgp = { enabled: true, asn: 65001, peers: [{ id: 'p1', peerIp: '10.1.0.2', remoteAs: 65000 }], networks: [{ id: 'n1', prefix: '192.168.10.0/24' }] };
+      const pe = makeMinimalNode('pe', 'PE', 'cisco-ios-xe');
+      pe.routerId = '2.2.2.2';
+      pe.interfaces = [
+        { id: 'pe-i1', name: 'Gi0/0', cidr: '10.1.0.2/30', vrf: 'default' },
+        { id: 'pe-i2', name: 'Gi0/1', cidr: '10.2.0.1/30', vrf: 'default' },
+      ];
+      pe.bgp = {
+        enabled: true,
+        asn: 65000,
+        peers: [
+          { id: 'p2a', peerIp: '10.1.0.1', remoteAs: 65001 },
+          { id: 'p2b', peerIp: '10.2.0.2', remoteAs: 65001, asOverride: true },
+        ],
+        networks: [],
+      };
+      const ce2 = makeMinimalNode('ce2', 'CE2', 'cisco-ios-xe');
+      ce2.routerId = '3.3.3.3';
+      ce2.interfaces = [{ id: 'ce2-i1', name: 'Gi0/0', cidr: '10.2.0.2/30', vrf: 'default' }];
+      ce2.bgp = { enabled: true, asn: 65001, peers: [{ id: 'p3', peerIp: '10.2.0.1', remoteAs: 65000 }], networks: [] };
+      const asoSim = solveTopology({
+        nodes: [ce1, pe, ce2],
+        links: [
+          { id: 'al1', sourceNodeId: 'ce1', sourceInterfaceId: 'ce1-i1', targetNodeId: 'pe', targetInterfaceId: 'pe-i1' },
+          { id: 'al2', sourceNodeId: 'pe', sourceInterfaceId: 'pe-i2', targetNodeId: 'ce2', targetInterfaceId: 'ce2-i1' },
+        ],
+      });
+      const ce2Learned = asoSim.nodes['ce2'].rib.find((r) => r.prefix === '192.168.10.0' && r.active);
+      expect(ce2Learned?.bgpAttrs?.asPath).toEqual([65000, 65000]);
+
+      // 3. adminDown node installs 0 RIB/FIB entries even with static Null0 routes
+      const downNode = makeMinimalNode('dn1', 'DOWN-R1', 'cisco-ios-xe');
+      downNode.adminDown = true;
+      downNode.staticRoutes = [{ id: 'ds1', vrf: 'default', prefix: '0.0.0.0/0', nextHop: 'Null0' }];
+      const downSim = solveTopology({ nodes: [downNode], links: [] });
+      expect(downSim.nodes['dn1'].rib).toHaveLength(0);
+
+      // 4. Junos config with IS-IS is classified as juniper-junos (not vyos)
+      const junosIsis = importTopologyFromText(`set system host-name JUNOS-ISIS
+set routing-options router-id 10.0.0.1
+set interfaces ge-0/0/0 unit 0 family inet address 10.1.0.1/30
+set protocols isis interface ge-0/0/0.0`).nodes[0];
+      expect(junosIsis.vendor).toBe('juniper-junos');
+      expect(junosIsis.interfaces[0].cidr).toBe('10.1.0.1/30');
+
+      // 5. Store updateNode resets orphaned traceVrf to 'default' when deleted from trace source node
+      useSimStore.getState().createWorkspace('VrfSanitizeTest');
+      const vrfSrc = makeMinimalNode('vs1', 'VRF-SRC', 'cisco-ios-xe');
+      vrfSrc.vrfs = ['default', 'CORP'];
+      useSimStore.getState().importTopology({ nodes: [vrfSrc], links: [] });
+      useSimStore.getState().setTraceParams('vs1', '8.8.8.8', 'CORP');
+      expect(useSimStore.getState().traceVrf).toBe('CORP');
+      useSimStore.getState().updateNode('vs1', { vrfs: ['default'] });
+      expect(useSimStore.getState().traceVrf).toBe('default');
+    });
+
+    it('covers confirmation sweep fixes (OSPF redist/totally-stubby, BGP max-prefix pruning, sub-iface down, IPv6 BGP status, dotted-quad OSPF, VRF round-trip, ACL comments, store rename/delete)', () => {
+      // 1. OSPF redistribution of RIP does not self-install or oscillate
+      const ripSrc = makeMinimalNode('osr1', 'RIP-SRC', 'cisco-ios-xe');
+      ripSrc.routerId = '1.1.1.1';
+      ripSrc.interfaces = [
+        { id: 'osr1-i1', name: 'Gi0/0', cidr: '10.1.0.1/30', vrf: 'default' },
+        { id: 'osr1-lo0', name: 'Lo0', cidr: '172.16.99.1/24', vrf: 'default' },
+      ];
+      ripSrc.rip = { enabled: true, version: 2, networks: [{ id: 'rn1', prefix: '10.1.0.0/30' }, { id: 'rn2', prefix: '172.16.99.0/24' }] };
+
+      const asbr = makeMinimalNode('osr2', 'ASBR', 'cisco-ios-xe');
+      asbr.routerId = '2.2.2.2';
+      asbr.interfaces = [
+        { id: 'osr2-i1', name: 'Gi0/0', cidr: '10.1.0.2/30', vrf: 'default' },
+        { id: 'osr2-i2', name: 'Gi0/1', cidr: '10.2.0.1/30', vrf: 'default', ospfArea: 0 },
+      ];
+      asbr.rip = { enabled: true, version: 2, networks: [{ id: 'rn3', prefix: '10.1.0.0/30' }] };
+      asbr.ospf = { enabled: true, networks: [] };
+      asbr.redistributions = [{ id: 'red-rip-ospf', from: 'rip', to: 'ospf', metric: 20 }];
+
+      const ospfNbr = makeMinimalNode('osr3', 'OSPF-NBR', 'cisco-ios-xe');
+      ospfNbr.routerId = '3.3.3.3';
+      ospfNbr.interfaces = [{ id: 'osr3-i1', name: 'Gi0/0', cidr: '10.2.0.2/30', vrf: 'default', ospfArea: 0 }];
+      ospfNbr.ospf = { enabled: true, networks: [] };
+
+      const ospfRedSim = solveTopology({
+        nodes: [ripSrc, asbr, ospfNbr],
+        links: [
+          { id: 'ol1', sourceNodeId: 'osr1', sourceInterfaceId: 'osr1-i1', targetNodeId: 'osr2', targetInterfaceId: 'osr2-i1' },
+          { id: 'ol2', sourceNodeId: 'osr2', sourceInterfaceId: 'osr2-i2', targetNodeId: 'osr3', targetInterfaceId: 'osr3-i1' },
+        ],
+      });
+      expect(ospfRedSim.nodes['osr2'].rib.find((r) => r.prefix === '172.16.99.0' && r.active)?.protocol).toBe('rip');
+      expect(ospfRedSim.nodes['osr2'].rib.some((r) => r.prefix === '172.16.99.0' && r.protocol === 'ospf')).toBe(false);
+      expect(ospfRedSim.nodes['osr3'].rib.find((r) => r.prefix === '172.16.99.0' && r.active)?.protocol).toBe('ospf');
+
+      // 2. OSPF totally-stubby area blocks Area 0 intra-area routes
+      const a0 = makeMinimalNode('ts1', 'A0-R1', 'cisco-ios-xe');
+      a0.routerId = '10.0.0.1';
+      a0.interfaces = [
+        { id: 'ts1-i1', name: 'Gi0/0', cidr: '10.10.0.1/30', vrf: 'default', ospfArea: 0 },
+        { id: 'ts1-lo0', name: 'Lo0', cidr: '192.168.50.1/24', vrf: 'default', ospfArea: 0 },
+      ];
+      a0.ospf = { enabled: true, networks: [] };
+      const abr = makeMinimalNode('ts2', 'ABR', 'cisco-ios-xe');
+      abr.routerId = '10.0.0.2';
+      abr.interfaces = [
+        { id: 'ts2-i1', name: 'Gi0/0', cidr: '10.10.0.2/30', vrf: 'default', ospfArea: 0 },
+        { id: 'ts2-i2', name: 'Gi0/1', cidr: '10.11.0.1/30', vrf: 'default', ospfArea: 1 },
+      ];
+      abr.ospf = { enabled: true, networks: [], areaTypes: { 1: 'totally-stubby' } };
+      const a1 = makeMinimalNode('ts3', 'A1-R1', 'cisco-ios-xe');
+      a1.routerId = '10.0.0.3';
+      a1.interfaces = [{ id: 'ts3-i1', name: 'Gi0/0', cidr: '10.11.0.2/30', vrf: 'default', ospfArea: 1 }];
+      a1.ospf = { enabled: true, networks: [], areaTypes: { 1: 'totally-stubby' } };
+      const tsSim = solveTopology({
+        nodes: [a0, abr, a1],
+        links: [
+          { id: 'tl1', sourceNodeId: 'ts1', sourceInterfaceId: 'ts1-i1', targetNodeId: 'ts2', targetInterfaceId: 'ts2-i1' },
+          { id: 'tl2', sourceNodeId: 'ts2', sourceInterfaceId: 'ts2-i2', targetNodeId: 'ts3', targetInterfaceId: 'ts3-i1' },
+        ],
+      });
+      expect(tsSim.nodes['ts3'].rib.some((r) => r.prefix === '192.168.50.0')).toBe(false);
+
+      // 3. BGP maxPrefixes prunes previously learned routes & skips defaultOriginate
+      const mp3 = makeMinimalNode('mp3', 'MP3', 'cisco-ios-xe');
+      mp3.routerId = '3.3.3.3';
+      mp3.interfaces = [
+        { id: 'mp3-i1', name: 'Gi0/0', cidr: '10.30.0.1/30', vrf: 'default' },
+        { id: 'mp3-lo1', name: 'Lo1', cidr: '198.51.100.1/24', vrf: 'default' },
+      ];
+      mp3.bgp = { enabled: true, asn: 65003, peers: [{ id: 'p31', peerIp: '10.30.0.2', remoteAs: 65001 }], networks: [{ id: 'n3', prefix: '198.51.100.0/24' }] };
+      const mp1 = makeMinimalNode('mp1', 'MP1', 'cisco-ios-xe');
+      mp1.routerId = '1.1.1.1';
+      mp1.interfaces = [
+        { id: 'mp1-i1', name: 'Gi0/0', cidr: '10.30.0.2/30', vrf: 'default' },
+        { id: 'mp1-i2', name: 'Gi0/1', cidr: '10.31.0.1/30', vrf: 'default' },
+        { id: 'mp1-lo1', name: 'Lo1', cidr: '192.0.2.1/24', vrf: 'default' },
+        { id: 'mp1-lo2', name: 'Lo2', cidr: '203.0.113.1/24', vrf: 'default' },
+      ];
+      mp1.bgp = {
+        enabled: true,
+        asn: 65001,
+        peers: [
+          { id: 'p13', peerIp: '10.30.0.1', remoteAs: 65003 },
+          { id: 'p12', peerIp: '10.31.0.2', remoteAs: 65002, defaultOriginate: true },
+        ],
+        networks: [{ id: 'n1a', prefix: '192.0.2.0/24' }, { id: 'n1b', prefix: '203.0.113.0/24' }],
+      };
+      const mp2 = makeMinimalNode('mp2', 'MP2', 'cisco-ios-xe');
+      mp2.routerId = '2.2.2.2';
+      mp2.interfaces = [{ id: 'mp2-i1', name: 'Gi0/0', cidr: '10.31.0.2/30', vrf: 'default' }];
+      mp2.bgp = { enabled: true, asn: 65002, peers: [{ id: 'p21', peerIp: '10.31.0.1', remoteAs: 65001, maxPrefixes: 2 }], networks: [] };
+      const mpSim = solveTopology({
+        nodes: [mp3, mp1, mp2],
+        links: [
+          { id: 'mpl1', sourceNodeId: 'mp3', sourceInterfaceId: 'mp3-i1', targetNodeId: 'mp1', targetInterfaceId: 'mp1-i1' },
+          { id: 'mpl2', sourceNodeId: 'mp1', sourceInterfaceId: 'mp1-i2', targetNodeId: 'mp2', targetInterfaceId: 'mp2-i1' },
+        ],
+      });
+      expect(mpSim.nodes['mp2'].rib.filter((r) => r.protocol === 'ebgp')).toHaveLength(0);
+
+      // 4. Sub-interface goes down when parent physical link is adminDown
+      const subR1 = makeMinimalNode('sub1', 'SUB1', 'cisco-ios-xe');
+      subR1.interfaces = [
+        { id: 'sub1-p', name: 'Gi0/0', cidr: '', vrf: 'default' },
+        { id: 'sub1-s', name: 'Gi0/0.10', cidr: '10.99.10.1/24', vrf: 'default', vlanId: 10 },
+      ];
+      const subR2 = makeMinimalNode('sub2', 'SUB2', 'cisco-ios-xe');
+      subR2.interfaces = [{ id: 'sub2-p', name: 'Gi0/0', cidr: '', vrf: 'default' }];
+      const subSim = solveTopology({
+        nodes: [subR1, subR2],
+        links: [{ id: 'subl1', sourceNodeId: 'sub1', sourceInterfaceId: 'sub1-p', targetNodeId: 'sub2', targetInterfaceId: 'sub2-p', adminDown: true }],
+      });
+      expect(subSim.nodes['sub1'].rib.some((r) => r.prefix === '10.99.10.0')).toBe(false);
+
+      // 5. Non-canonical IPv6 BGP peerIp shows Established in neighbor status
+      const v6a = makeMinimalNode('v6a', 'V6A', 'cisco-ios-xe');
+      v6a.routerId = '6.6.6.1';
+      v6a.interfaces = [{ id: 'v6a-i1', name: 'Gi0/0', cidr: '', cidr6: '2001:db8::1/64', vrf: 'default' }];
+      v6a.bgp = { enabled: true, asn: 65100, peers: [{ id: 'v6p1', peerIp: '2001:0DB8::2', remoteAs: 65200 }], networks: [] };
+      const v6b = makeMinimalNode('v6b', 'V6B', 'cisco-ios-xe');
+      v6b.routerId = '6.6.6.2';
+      v6b.interfaces = [{ id: 'v6b-i1', name: 'Gi0/0', cidr: '', cidr6: '2001:db8::2/64', vrf: 'default' }];
+      v6b.bgp = { enabled: true, asn: 65200, peers: [{ id: 'v6p2', peerIp: '2001:0db8::1', remoteAs: 65100 }], networks: [] };
+      const v6Sim = solveTopology({
+        nodes: [v6a, v6b],
+        links: [{ id: 'v6l1', sourceNodeId: 'v6a', sourceInterfaceId: 'v6a-i1', targetNodeId: 'v6b', targetInterfaceId: 'v6b-i1' }],
+      });
+      expect(v6Sim.nodes['v6a'].neighbors?.find((n) => n.protocol === 'bgp')?.state).toBe('Established');
+
+      // 6. Dotted-quad OSPF areas, VRF CIDR static route, VRF-scoped passive-interface default, and VRF round-trip
+      const nxCfg = `hostname NX-VRF-TEST
+vrf context CORP
+interface Ethernet1/1
+ ip address 10.1.0.1/30
+ ip router ospf 1 area 0.0.0.51
+interface Ethernet1/2
+ vrf member CORP
+ ip address 10.2.0.1/30
+router ospf 1 vrf CORP
+ passive-interface default
+ network 10.2.0.0 0.0.0.3 area 0.0.0.10
+ redistribute bgp 65001 subnets
+router bgp 65001
+ address-family ipv4 vrf CORP
+  aggregate-address 10.20.0.0 255.255.0.0 summary-only
+  redistribute ospf 1
+ exit-address-family
+ip route vrf CORP 192.168.10.0/24 10.2.0.2`;
+      const nxNode = importTopologyFromText(nxCfg).nodes[0];
+      expect(nxNode.interfaces.find((i) => i.name === 'Ethernet1/1')?.ospfArea).toBe(51);
+      expect(nxNode.interfaces.find((i) => i.name === 'Ethernet1/1')?.passive).not.toBe(true);
+      expect(nxNode.interfaces.find((i) => i.name === 'Ethernet1/2')?.passive).toBe(true);
+      expect(nxNode.ospf.networks[0]?.area).toBe(10);
+      expect(nxNode.staticRoutes.find((s) => s.prefix === '192.168.10.0/24')?.vrf).toBe('CORP');
+      const roundTripped = importTopologyFromText(formatRunningConfig(nxNode)).nodes[0];
+      expect(roundTripped.redistributions.find((r) => r.to === 'ospf')?.vrf).toBe('CORP');
+      expect(roundTripped.redistributions.find((r) => r.to === 'bgp')?.vrf).toBe('CORP');
+      expect(roundTripped.bgp.aggregates?.[0]?.vrf).toBe('CORP');
+
+      // 7. PAN-OS description keywords & Cisco inline comment do not corrupt ACL rules
+      const panAcl = parsePanOsAclRules(`set rulebase security rules allow-web from trust
+set rulebase security rules allow-web to untrust
+set rulebase security rules allow-web action allow
+set rulebase security rules allow-web description "Migrated from old-zone to new-zone; action deny was removed"`.split('\n'));
+      expect(panAcl[0]?.action).toBe('allow');
+      expect(panAcl[0]?.srcZone).toBe('trust');
+      expect(panAcl[0]?.dstZone).toBe('untrust');
+      const ciscoAcl = parseCiscoStyleAclRules(`ip access-list extended TEST
+ 10 permit ip 10.0.0.0 0.0.0.255 192.168.1.0 0.0.0.255 ! allow eq 80 comment`.split('\n'));
+      expect(ciscoAcl[0]?.dstPort).toBeUndefined();
+
+      // 8. Store updateInterface rename and deleteInterface propagate/clean up name references
+      useSimStore.getState().createWorkspace('IfaceRenameCleanupTest');
+      const rn = makeMinimalNode('rn1', 'RN1', 'cisco-ios-xe');
+      rn.interfaces = [{ id: 'rn-lo0', name: 'Loopback0', cidr: '1.1.1.1/32', vrf: 'default' }];
+      rn.bgp = { enabled: true, asn: 65001, peers: [{ id: 'rp1', peerIp: '2.2.2.2', remoteAs: 65001, updateSource: 'Loopback0' }], networks: [] };
+      rn.staticRoutes = [{ id: 'rs1', vrf: 'default', prefix: '10.0.0.0/8', nextHop: '1.1.1.2', interfaceName: 'Loopback0' }];
+      useSimStore.getState().importTopology({ nodes: [rn], links: [] });
+      useSimStore.getState().updateInterface('rn1', 'rn-lo0', { name: 'Loopback10' });
+      let updatedRn = useSimStore.getState().topology.nodes[0];
+      expect(updatedRn.bgp.peers[0].updateSource).toBe('Loopback10');
+      expect(updatedRn.staticRoutes[0].interfaceName).toBe('Loopback10');
+      useSimStore.getState().deleteInterface('rn1', 'rn-lo0');
+      updatedRn = useSimStore.getState().topology.nodes[0];
+      expect(updatedRn.bgp.peers[0].updateSource).toBeUndefined();
+      expect(updatedRn.staticRoutes[0].interfaceName).toBeUndefined();
+    });
+
+    it('covers recursive hunt pass 1 fixes (OSPF sham-link VRF, EVPN/MPLS-VPN loop prevention, overlapping-IP BGP VRFs, EIGRP/IS-IS triangle loops, BGP medMissingAsWorst, dotted-quad >255, secondary IP, PAN-OS bracket VR, FortiGate default static, Gaia BGP dedup, MikroTik quoted VRF, route-map validator, maxPaths, store applyParsedNodeConfig)', () => {
+      // 1. OSPF sham-link in non-default VRF resolves next-hop via default VRF
+      const pe1 = makeMinimalNode('sh1', 'PE1', 'cisco-ios-xe');
+      pe1.routerId = '1.1.1.1';
+      pe1.vrfs = ['default', 'CUST'];
+      pe1.interfaces = [
+        { id: 'sh1-bb', name: 'Gi0/0', cidr: '10.0.0.1/30', vrf: 'default', ospfArea: 0 },
+        { id: 'sh1-lo', name: 'Lo0', cidr: '1.1.1.1/32', vrf: 'default', ospfArea: 0 },
+      ];
+      pe1.ospf = {
+        enabled: true,
+        networks: [],
+        shamLinks: [{ id: 'sl1', vrf: 'CUST', area: 0, srcIp: '1.1.1.1', dstIp: '2.2.2.2', cost: 5 }],
+      };
+      const pe2 = makeMinimalNode('sh2', 'PE2', 'cisco-ios-xe');
+      pe2.routerId = '2.2.2.2';
+      pe2.vrfs = ['default', 'CUST'];
+      pe2.interfaces = [
+        { id: 'sh2-bb', name: 'Gi0/0', cidr: '10.0.0.2/30', vrf: 'default', ospfArea: 0 },
+        { id: 'sh2-lo', name: 'Lo0', cidr: '2.2.2.2/32', vrf: 'default', ospfArea: 0 },
+        { id: 'sh2-cu', name: 'Gi0/1', cidr: '192.168.77.1/24', vrf: 'CUST', ospfArea: 0 },
+      ];
+      pe2.ospf = {
+        enabled: true,
+        networks: [],
+      };
+      const shamSim = solveTopology({
+        nodes: [pe1, pe2],
+        links: [{ id: 'shl1', sourceNodeId: 'sh1', sourceInterfaceId: 'sh1-bb', targetNodeId: 'sh2', targetInterfaceId: 'sh2-bb' }],
+      });
+      const shamRoute = shamSim.nodes['sh1'].rib.find((r) => r.vrf === 'CUST' && r.prefix === '192.168.77.0');
+      expect(shamRoute?.active).toBe(true);
+      expect(shamRoute?.protocol).toBe('ospf');
+
+      // 2. BGP medMissingAsWorst treats missing MED as worst vs explicit MED
+      const b1 = makeMinimalNode('bm1', 'BM1', 'cisco-ios-xe');
+      b1.routerId = '10.0.0.1';
+      b1.interfaces = [{ id: 'bm1-i1', name: 'Gi0/0', cidr: '10.1.0.1/30', vrf: 'default' }];
+      b1.bgp = { enabled: true, asn: 65001, peers: [{ id: 'bp1', peerIp: '10.1.0.2', remoteAs: 65000 }], networks: [{ id: 'bn1', prefix: '198.18.0.0/24' }] };
+      const b2 = makeMinimalNode('bm2', 'BM2', 'cisco-ios-xe');
+      b2.routerId = '10.0.0.2';
+      b2.interfaces = [{ id: 'bm2-i1', name: 'Gi0/0', cidr: '10.2.0.1/30', vrf: 'default' }];
+      b2.bgp = { enabled: true, asn: 65001, peers: [{ id: 'bp2', peerIp: '10.2.0.2', remoteAs: 65000 }], networks: [{ id: 'bn2', prefix: '198.18.0.0/24', med: 50 }] };
+      const b0 = makeMinimalNode('bm0', 'BM0', 'cisco-ios-xe');
+      b0.routerId = '10.0.0.3';
+      b0.interfaces = [
+        { id: 'bm0-i1', name: 'Gi0/0', cidr: '10.1.0.2/30', vrf: 'default' },
+        { id: 'bm0-i2', name: 'Gi0/1', cidr: '10.2.0.2/30', vrf: 'default' },
+      ];
+      b0.bgp = {
+        enabled: true,
+        asn: 65000,
+        medMissingAsWorst: true,
+        peers: [
+          { id: 'bp01', peerIp: '10.1.0.1', remoteAs: 65001 },
+          { id: 'bp02', peerIp: '10.2.0.1', remoteAs: 65001 },
+        ],
+        networks: [],
+      };
+      const medSim = solveTopology({
+        nodes: [b1, b2, b0],
+        links: [
+          { id: 'bml1', sourceNodeId: 'bm1', sourceInterfaceId: 'bm1-i1', targetNodeId: 'bm0', targetInterfaceId: 'bm0-i1' },
+          { id: 'bml2', sourceNodeId: 'bm2', sourceInterfaceId: 'bm2-i1', targetNodeId: 'bm0', targetInterfaceId: 'bm0-i2' },
+        ],
+      });
+      const medBest = medSim.nodes['bm0'].rib.find((r) => r.prefix === '198.18.0.0' && r.active);
+      expect(medBest?.nextHop).toBe('10.2.0.1');
+
+      // 3. Importer & Formatter round-trip fixes
+      const ciscoAdv = importTopologyFromText(`hostname ADV-TEST
+vrf context MGMT
+  ip route 0.0.0.0/0 192.168.1.1
+ip route 10.20.0.0/16 10.0.0.2
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.252
+ ip address 10.0.1.1 255.255.255.0 secondary
+ ip ospf 1 area 0.0.1.0
+router eigrp 100
+ network 10.0.0.0
+router lisp
+ proxy-itr
+router bgp 65001
+ maximum-paths 8
+ address-family ipv4 unicast vrf CUST-A
+  network 172.16.0.0 mask 255.255.0.0
+ exit-address-family`).nodes[0];
+      expect(ciscoAdv.interfaces[0].ospfArea).toBe(256);
+      expect(ciscoAdv.interfaces[0].secondaryCidrs).toEqual(['10.0.1.1/24']);
+      expect(ciscoAdv.staticRoutes.find((r) => r.prefix === '10.20.0.0/16')?.vrf).toBe('default');
+      expect(ciscoAdv.eigrp?.networks[0]?.prefix).toBe('10.0.0.0/8');
+      expect(ciscoAdv.lisp?.role).toBe('pitr');
+      expect(ciscoAdv.maxPaths).toBe(8);
+      expect(ciscoAdv.bgp.networks[0]?.vrf).toBe('CUST-A');
+
+      // PAN-OS bracket VR, FortiGate default static, Gaia BGP dedup, MikroTik quoted VRF, route-map validator
+      const panVr = importTopologyFromText(`set deviceconfig system hostname PAN-VR
+set network virtual-router VR-CORP interface [ ethernet1/1 ethernet1/2 ]`).nodes[0];
+      expect(panVr.interfaces.map((i) => i.name)).toEqual(['ethernet1/1', 'ethernet1/2']);
+      const fgtDef = importTopologyFromText(`config system global
+ set hostname FGT-DEF
+end
+config router static
+ edit 1
+  set gateway 198.51.100.1
+ next
+end`).nodes[0];
+      expect(fgtDef.staticRoutes[0]?.prefix).toBe('0.0.0.0/0');
+      const gaiaDedup = importTopologyFromText(`set hostname GAIA-BGP
+set as 65001
+set bgp external remote-as 65002 peer 10.0.0.2 on
+set bgp external remote-as 65002 peer 10.0.0.2 holdtime 90`).nodes[0];
+      expect(gaiaDedup.bgp.peers).toHaveLength(1);
+      const mkVrf = importTopologyFromText(`/system identity set name=MK-VRF
+/ip vrf add name=CUST interfaces="ether1,ether2"`).nodes[0];
+      expect(mkVrf.interfaces.map((i) => i.name)).toEqual(['ether1', 'ether2']);
+      expect(validateRunningConfig('route-map TEST permit 10\n set local-preference 200\n totally-bogus-cmd\n!').length).toBeGreaterThan(0);
+    });
+
+    it('covers recursive hunt pass 2 fixes (OSPF sham-link encap, BGP confed/asSet loop prevention, IS-IS L2->L1 metric update, indented !, network 0.0.0.0, applyParsedNodeConfig vendor/attr removal, atomic deleteSelection)', () => {
+      // 1. BGP confederationId and aggregate asSet loop prevention
+      const aggR1 = makeMinimalNode('ag1', 'AG1', 'cisco-ios-xe');
+      aggR1.routerId = '1.1.1.1';
+      aggR1.interfaces = [
+        { id: 'ag1-i1', name: 'Gi0/0', cidr: '10.0.0.1/30', vrf: 'default' },
+        { id: 'ag1-lo', name: 'Lo0', cidr: '10.1.0.1/24', vrf: 'default' },
+      ];
+      aggR1.bgp = {
+        enabled: true,
+        asn: 65001,
+        peers: [{ id: 'ap1', peerIp: '10.0.0.2', remoteAs: 65002 }],
+        networks: [{ id: 'an1', prefix: '10.1.0.0/24' }],
+      };
+      const aggR2 = makeMinimalNode('ag2', 'AG2', 'cisco-ios-xe');
+      aggR2.routerId = '2.2.2.2';
+      aggR2.interfaces = [{ id: 'ag2-i1', name: 'Gi0/0', cidr: '10.0.0.2/30', vrf: 'default' }];
+      aggR2.bgp = {
+        enabled: true,
+        asn: 65002,
+        peers: [{ id: 'ap2', peerIp: '10.0.0.1', remoteAs: 65001 }],
+        networks: [],
+        aggregates: [{ id: 'agg1', prefix: '10.1.0.0/16', summaryOnly: true, asSet: true }],
+      };
+      const aggSim = solveTopology({
+        nodes: [aggR1, aggR2],
+        links: [{ id: 'agl1', sourceNodeId: 'ag1', sourceInterfaceId: 'ag1-i1', targetNodeId: 'ag2', targetInterfaceId: 'ag2-i1' }],
+      });
+      expect(aggSim.nodes['ag1'].rib.some((r) => r.prefix === '10.1.0.0' && r.prefixLen === 16)).toBe(false);
+
+      // 2. Indented ' !' inside router bgp does not terminate section & network 0.0.0.0 -> 0.0.0.0/0
+      const iosBgp = `hostname IOS-INDENT-BANG
+router eigrp 100
+ network 0.0.0.0
+!
+router bgp 65001
+ bgp router-id 10.0.0.1
+ neighbor 10.1.1.2 remote-as 65002
+ !
+ address-family ipv4
+  network 10.10.0.0 mask 255.255.255.0
+ exit-address-family
+ !
+ address-family ipv4 vrf CORP
+  neighbor 10.2.2.2 remote-as 65003
+ exit-address-family
+!`;
+      const parsedBgp = importTopologyFromText(iosBgp).nodes[0];
+      expect(parsedBgp.eigrp?.networks[0]?.prefix).toBe('0.0.0.0/0');
+      expect(parsedBgp.bgp.networks[0]?.prefix).toBe('10.10.0.0/24');
+      expect(parsedBgp.bgp.peers.find((p) => p.peerIp === '10.2.2.2')?.vrf).toBe('CORP');
+      expect(validateRunningConfig(iosBgp)).toHaveLength(0);
+
+      // 3. applyParsedNodeConfig preserves vendor and removes deleted interface attributes; deleteSelection is single atomic undo
+      useSimStore.getState().createWorkspace('Pass2StoreTest');
+      const eosNode = makeMinimalNode('eos1', 'EOS1', 'arista-eos');
+      eosNode.interfaces = [{ id: 'eos-i1', name: 'Ethernet1', cidr: '10.1.0.1/24', vrf: 'default', shutdown: true }];
+      const eosNode2 = makeMinimalNode('eos2', 'EOS2', 'arista-eos');
+      eosNode2.interfaces = [{ id: 'eos-i2', name: 'Ethernet1', cidr: '10.1.0.2/24', vrf: 'default' }];
+      useSimStore.getState().importTopology({
+        nodes: [eosNode, eosNode2],
+        links: [{ id: 'el1', sourceNodeId: 'eos1', sourceInterfaceId: 'eos-i1', targetNodeId: 'eos2', targetInterfaceId: 'eos-i2' }],
+      });
+      const editedParsed = importTopologyFromText(`hostname EOS1\ninterface Ethernet1\n ip address 10.1.0.1/24\n!`).nodes[0];
+      useSimStore.getState().applyParsedNodeConfig('eos1', editedParsed);
+      const afterApply = useSimStore.getState().topology.nodes.find((n) => n.id === 'eos1')!;
+      expect(afterApply.vendor).toBe('arista-eos');
+      expect(afterApply.interfaces[0].shutdown).toBeUndefined();
+
+      useSimStore.getState().deleteSelection(['eos1', 'eos2'], ['el1']);
+      expect(useSimStore.getState().topology.nodes).toHaveLength(0);
+      useSimStore.getState().undo();
+      expect(useSimStore.getState().topology.nodes).toHaveLength(2);
+      expect(useSimStore.getState().topology.links).toHaveLength(1);
+
+      // 4. Pass 3: autoFormatRunningConfig keeps 'version 2' indented inside 'router rip'
+      const formattedRip = autoFormatRunningConfig('router rip\n version 2\n no auto-summary\n network 10.0.0.0\n!');
+      expect(formattedRip).toContain('router rip\n version 2\n no auto-summary\n network 10.0.0.0\n!');
+
+      // 5. Pass 4: Dual-stack BGP IPv6 session exchanges routes even when IPv4 peer is shutdown
+      const ds1 = makeMinimalNode('ds1', 'DS1', 'cisco-ios-xe');
+      ds1.routerId = '11.11.11.1';
+      ds1.interfaces = [{ id: 'ds1-i1', name: 'Gi0/0', cidr: '10.50.0.1/30', cidr6: '2001:db8:50::1/64', vrf: 'default' }];
+      ds1.bgp = {
+        enabled: true,
+        asn: 65010,
+        peers: [
+          { id: 'dsp1v4', peerIp: '10.50.0.2', remoteAs: 65020, shutdown: true },
+          { id: 'dsp1v6', peerIp: '2001:db8:50::2', remoteAs: 65020 },
+        ],
+        networks: [],
+      };
+      const ds2 = makeMinimalNode('ds2', 'DS2', 'cisco-ios-xe');
+      ds2.routerId = '11.11.11.2';
+      ds2.interfaces = [{ id: 'ds2-i1', name: 'Gi0/0', cidr: '10.50.0.2/30', cidr6: '2001:db8:50::2/64', vrf: 'default' }];
+      ds2.bgp = {
+        enabled: true,
+        asn: 65020,
+        peers: [
+          { id: 'dsp2v4', peerIp: '10.50.0.1', remoteAs: 65010, shutdown: true },
+          { id: 'dsp2v6', peerIp: '2001:db8:50::1', remoteAs: 65010 },
+        ],
+        networks: [{ id: 'dsn6', prefix: '2001:db8:99::/48' }],
+      };
+      const dsSim = solveTopology({
+        nodes: [ds1, ds2],
+        links: [{ id: 'dsl1', sourceNodeId: 'ds1', sourceInterfaceId: 'ds1-i1', targetNodeId: 'ds2', targetInterfaceId: 'ds2-i1' }],
+      });
+      expect(dsSim.nodes['ds1'].rib.some((r) => r.prefix === '2001:db8:99::' && r.active)).toBe(true);
+    });
   });
 });

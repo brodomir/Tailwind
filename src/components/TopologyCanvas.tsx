@@ -602,8 +602,7 @@ export const TopologyCanvas: React.FC = () => {
     updateNodePosition,
     addLink,
     updateLink,
-    deleteLink,
-    deleteNode,
+    deleteSelection,
     themeMode,
   } = useSimStore();
 
@@ -636,31 +635,48 @@ export const TopologyCanvas: React.FC = () => {
   }, [traceResult]);
 
   const tracedEdgeMap = useMemo(() => {
-    const map = new Map<string, { reverse: boolean; hopIndex: number; blocked: boolean; vrf: string }>();
+    const map = new Map<
+      string,
+      { reverse: boolean; hopIndex: number; blocked: boolean; vrf: string; egressIf?: string }[]
+    >();
     if (!traceResult) return map;
     for (let i = 0; i < traceResult.hops.length - 1; i++) {
       const a = traceResult.hops[i].nodeId;
       const b = traceResult.hops[i + 1].nodeId;
       const hopVrf = traceResult.hops[i].vrf;
+      const egressIf = traceResult.hops[i].egressInterface;
       const nextStatus = traceResult.hops[i + 1].status;
       const isBlocked =
         nextStatus === 'blocked' || nextStatus === 'dropped' || nextStatus === 'loop';
-      map.set(`${a}->${b}`, { reverse: false, hopIndex: i, blocked: isBlocked, vrf: hopVrf });
-      map.set(`${b}->${a}`, { reverse: true, hopIndex: i, blocked: isBlocked, vrf: hopVrf });
+      const fwd = map.get(`${a}->${b}`) ?? [];
+      fwd.push({ reverse: false, hopIndex: i, blocked: isBlocked, vrf: hopVrf, egressIf });
+      map.set(`${a}->${b}`, fwd);
+      const rev = map.get(`${b}->${a}`) ?? [];
+      rev.push({ reverse: true, hopIndex: i, blocked: isBlocked, vrf: hopVrf, egressIf });
+      map.set(`${b}->${a}`, rev);
     }
     return map;
   }, [traceResult]);
 
   const returnEdgeMap = useMemo(() => {
-    const map = new Map<string, { reverse: boolean; hopIndex: number; blocked: boolean }>();
+    const map = new Map<
+      string,
+      { reverse: boolean; hopIndex: number; blocked: boolean; egressIf?: string }[]
+    >();
     const hops = traceResult?.returnTrace?.hops ?? [];
     for (let i = 0; i < hops.length - 1; i++) {
       const a = hops[i].nodeId;
       const b = hops[i + 1].nodeId;
+      const egressIf = hops[i].egressInterface;
       const nextStatus = hops[i + 1].status;
-      const isBlocked = nextStatus === 'blocked' || nextStatus === 'dropped';
-      map.set(`${a}->${b}`, { reverse: false, hopIndex: i, blocked: isBlocked });
-      map.set(`${b}->${a}`, { reverse: true, hopIndex: i, blocked: isBlocked });
+      const isBlocked =
+        nextStatus === 'blocked' || nextStatus === 'dropped' || nextStatus === 'loop';
+      const fwd = map.get(`${a}->${b}`) ?? [];
+      fwd.push({ reverse: false, hopIndex: i, blocked: isBlocked, egressIf });
+      map.set(`${a}->${b}`, fwd);
+      const rev = map.get(`${b}->${a}`) ?? [];
+      rev.push({ reverse: true, hopIndex: i, blocked: isBlocked, egressIf });
+      map.set(`${b}->${a}`, rev);
     }
     return map;
   }, [traceResult]);
@@ -791,8 +807,46 @@ export const TopologyCanvas: React.FC = () => {
       const costInfo =
         srcIf?.ospfArea !== undefined ? ` • OSPF A${srcIf.ospfArea}` : '';
 
-      const traceEdge = tracedEdgeMap.get(`${l.sourceNodeId}->${l.targetNodeId}`);
-      const retEdge = returnEdgeMap.get(`${l.sourceNodeId}->${l.targetNodeId}`);
+      const matchesHopIface = (
+        seg: { reverse: boolean; egressIf?: string },
+        sIf?: typeof srcIf,
+        dIf?: typeof dstIf
+      ): boolean => {
+        if (!seg.egressIf) return true;
+        const linkIf = seg.reverse ? dIf?.name : sIf?.name;
+        if (!linkIf) return false;
+        const h = seg.egressIf.toLowerCase();
+        const lf = linkIf.toLowerCase();
+        return h === lf || h.startsWith(`${lf}.`);
+      };
+      const pickMatchingEdge = <T extends { reverse: boolean; egressIf?: string }>(
+        candidates: T[] | undefined
+      ): T | undefined => {
+        if (l.adminDown || !candidates || candidates.length === 0) return undefined;
+        const exact = candidates.find((seg) => matchesHopIface(seg, srcIf, dstIf));
+        if (exact) return exact;
+        // Fallback for virtual/LAG egress interfaces (e.g. Port-Channel) when no physical link name matches
+        const anyPeerLinkMatches = topology.links.some((other) => {
+          if (other.adminDown) return false;
+          const samePair =
+            (other.sourceNodeId === l.sourceNodeId && other.targetNodeId === l.targetNodeId) ||
+            (other.sourceNodeId === l.targetNodeId && other.targetNodeId === l.sourceNodeId);
+          if (!samePair) return false;
+          const oSrc = nodeById.get(other.sourceNodeId)?.interfaces.find((i) => i.id === other.sourceInterfaceId);
+          const oDst = nodeById.get(other.targetNodeId)?.interfaces.find((i) => i.id === other.targetInterfaceId);
+          const flipped = other.sourceNodeId !== l.sourceNodeId;
+          return candidates.some((seg) =>
+            matchesHopIface(
+              flipped ? { ...seg, reverse: !seg.reverse } : seg,
+              oSrc,
+              oDst
+            )
+          );
+        });
+        return anyPeerLinkMatches ? undefined : candidates[0];
+      };
+      const traceEdge = pickMatchingEdge(tracedEdgeMap.get(`${l.sourceNodeId}->${l.targetNodeId}`));
+      const retEdge = pickMatchingEdge(returnEdgeMap.get(`${l.sourceNodeId}->${l.targetNodeId}`));
 
       const isIpsec = l.linkType === 'ipsec';
       const isLayer2 = l.linkType === 'layer2';
@@ -929,9 +983,11 @@ export const TopologyCanvas: React.FC = () => {
         connectionMode={ConnectionMode.Loose}
         onNodesChange={handleNodesChange}
         onConnect={handleConnect}
-        onNodesDelete={(nodes) => nodes.forEach((n) => deleteNode(n.id))}
-        onEdgesDelete={(edges) => {
-          edges.forEach((e) => deleteLink(e.id));
+        onDelete={({ nodes, edges }) => {
+          deleteSelection(
+            nodes.map((n) => n.id),
+            edges.map((e) => e.id)
+          );
           setSelectedEdgeId(null);
         }}
         deleteKeyCode={['Backspace', 'Delete']}

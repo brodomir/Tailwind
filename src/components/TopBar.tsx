@@ -322,7 +322,10 @@ export const TopBar: React.FC = () => {
       setImportText(text);
       return;
     }
-    const parsedNodes = [];
+    const parsedNodes: ReturnType<typeof importTopologyFromText>['nodes'] = [];
+    const parsedLinks: ReturnType<typeof importTopologyFromText>['links'] = [];
+    const usedNodeIds = new Set<string>();
+    const usedLinkIds = new Set<string>();
     for (const f of fileArr) {
       try {
         const text = await f.text();
@@ -331,7 +334,33 @@ export const TopBar: React.FC = () => {
           if (res.nodes[0].hostname.endsWith('-IMPORTED')) {
             res.nodes[0].hostname = f.name.replace(/\.[^.]+$/, '');
           }
-          parsedNodes.push(...res.nodes);
+          const idMap = new Map<string, string>();
+          for (const n of res.nodes) {
+            let nid = n.id;
+            if (usedNodeIds.has(nid)) {
+              let suffix = 1;
+              while (usedNodeIds.has(`${n.id}-${suffix}`)) suffix++;
+              nid = `${n.id}-${suffix}`;
+            }
+            usedNodeIds.add(nid);
+            idMap.set(n.id, nid);
+            parsedNodes.push(nid === n.id ? n : { ...n, id: nid });
+          }
+          for (const l of res.links) {
+            let lid = l.id;
+            if (usedLinkIds.has(lid)) {
+              let suffix = 1;
+              while (usedLinkIds.has(`${l.id}-${suffix}`)) suffix++;
+              lid = `${l.id}-${suffix}`;
+            }
+            usedLinkIds.add(lid);
+            parsedLinks.push({
+              ...l,
+              id: lid,
+              sourceNodeId: idMap.get(l.sourceNodeId) ?? l.sourceNodeId,
+              targetNodeId: idMap.get(l.targetNodeId) ?? l.targetNodeId,
+            });
+          }
         }
       } catch (err) {
         setImportError(`Failed to parse ${f.name}: ${err instanceof Error ? err.message : 'error'}`);
@@ -340,12 +369,18 @@ export const TopBar: React.FC = () => {
     }
     if (importMode === 'hydrate') {
       const updated = hydrateMatchingNodes(parsedNodes);
+      if (updated === 0) {
+        setImportError(
+          'No matching appliance hostnames found in the current workspace. Switch mode to "Merge" or "Replace" to add them.'
+        );
+        return;
+      }
       msgApi.success(`Updated ${updated}/${parsedNodes.length} matching appliance(s) from ${fileArr.length} file(s)`);
     } else if (importMode === 'merge') {
-      mergeImportedNodes(parsedNodes, []);
+      mergeImportedNodes(parsedNodes, parsedLinks);
       msgApi.success(`Added ${parsedNodes.length} appliance(s) from ${fileArr.length} file(s)`);
     } else {
-      importTopology({ nodes: parsedNodes, links: [] });
+      importTopology({ nodes: parsedNodes, links: parsedLinks });
       msgApi.success(`Loaded ${parsedNodes.length} appliance(s) from ${fileArr.length} file(s)`);
     }
     setImportOpen(false);
@@ -684,7 +719,8 @@ export const TopBar: React.FC = () => {
                       pickedIf?.vrf || traceVrf,
                       traceProto,
                       tracePort,
-                      val ?? null
+                      val ?? null,
+                      null
                     );
                   }}
                   style={{ width: 115 }}
@@ -696,16 +732,21 @@ export const TopBar: React.FC = () => {
               )}
               <Select
                 value={traceVrf}
-                onChange={(val) =>
+                onChange={(val) => {
+                  const pickedIf = topology.nodes
+                    .find((n) => n.id === traceSrcNodeId)
+                    ?.interfaces.find((i) => i.id === traceSrcInterfaceId);
+                  const keepIf = Boolean(pickedIf && (pickedIf.vrf || 'default') === val);
                   setTraceParams(
                     traceSrcNodeId,
                     traceDstIp,
                     val,
                     traceProto,
                     tracePort,
-                    traceSrcInterfaceId
-                  )
-                }
+                    keepIf ? traceSrcInterfaceId : null,
+                    keepIf ? undefined : null
+                  );
+                }}
                 style={{ width: 96 }}
                 placeholder="VRF"
                 options={srcVrfs.map((v) => ({ value: v, label: `vrf:${v}` }))}

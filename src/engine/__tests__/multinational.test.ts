@@ -110,7 +110,7 @@ describe('Multinational Network (Spine-Leaf + Global WAN + Multi-Vendor)', () =>
         res.nodes['ap-fp1'].neighbors?.some((n) => n.protocol === 'ha' && n.state === 'Active')
       ).toBe(true);
       expect(
-        res.nodes['ap-fp2'].neighbors?.some((n) => n.protocol === 'ha' && n.state === 'Active')
+        res.nodes['ap-fp2'].neighbors?.some((n) => n.protocol === 'ha' && n.state === 'Standby')
       ).toBe(true);
       expect(
         res.nodes['ap-ios1'].neighbors?.some((n) => n.protocol === 'hsrp' && n.state === 'Active')

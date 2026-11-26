@@ -148,7 +148,10 @@ export function parsePanOsAclRules(lines: string[]): AclRuleConfig[] {
     const ruleM = line.match(/^set\s+rulebase\s+security\s+rules\s+(?:"([^"]+)"|([^"\s]+))\s+(.+)$/i);
     if (!ruleM) continue;
     const rule = getOrCreateRule((ruleM[1] ?? ruleM[2]).trim());
-    const rest = ruleM[3];
+    const rest = ruleM[3].trim();
+    if (/^(?:description|tag|log-|profile-setting|disabled|group-tag|uuid)\b/i.test(rest)) {
+      continue;
+    }
 
     const fromM = rest.match(/\bfrom\s+(?:\[\s*)?(?:"([^"]+)"|([^\s\]]+))/i);
     const fromVal = fromM ? (fromM[1] ?? fromM[2]) : undefined;
@@ -294,7 +297,9 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
   };
 
   const parseAce = (aceText: string, aclName: string, isStandard: boolean) => {
-    const tokens = aceText.trim().split(/\s+/);
+    const cleanAce = aceText.replace(/\s*!.*$/, '').trim();
+    if (!cleanAce) return;
+    const tokens = cleanAce.split(/\s+/);
     let i = 0;
     let explicitSeq: number | undefined;
     if (/^\d+$/.test(tokens[0] ?? '')) {
@@ -567,6 +572,7 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
   let isAwsEgress = false;
   let dstPort: number | undefined;
   let toPort: number | undefined;
+  let networkTag: string | undefined;
   let braceDepth = 0;
 
   const flushBlock = () => {
@@ -590,6 +596,7 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
       dstCidr: finalDst,
       protocol,
       ...(finalDstPort !== undefined ? { dstPort: finalDstPort } : {}),
+      ...(networkTag ? { networkTag } : {}),
     });
     blockKind = null;
     blockName = '';
@@ -601,6 +608,7 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
     isAwsEgress = false;
     dstPort = undefined;
     toPort = undefined;
+    networkTag = undefined;
     braceDepth = 0;
   };
 
@@ -718,6 +726,8 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
     if (toPortEq) toPort = Number(toPortEq[1]);
     const portsArrEq = line.match(/\bports\s*=\s*\[\s*"(\d+)/i);
     if (portsArrEq) dstPort = Number(portsArrEq[1]);
+    const targetTagsEq = line.match(/\btarget_tags\s*=\s*\[\s*"([^"]+)"/i);
+    if (targetTagsEq) networkTag = targetTagsEq[1];
 
     if (line.includes('}')) {
       braceDepth -= (line.match(/\}/g) || []).length;

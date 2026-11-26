@@ -655,6 +655,7 @@ export interface BgpAttributes {
   asSet?: number[];
   origin: BgpOriginType;
   med: number;
+  medMissing?: boolean;
   isEbgp: boolean;
   igpMetric: number;
   peerRouterId: string;

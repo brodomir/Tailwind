@@ -99,7 +99,6 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     simResult,
     baselineSimResult,
     selectedNodeId,
-    traceSrcNodeId,
     setTraceParams,
     runTrace,
     applyParsedNodeConfig,
@@ -276,7 +275,7 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             type="link"
             className="!h-auto !px-1 !py-0 !text-[10px]"
             onClick={() => {
-              setTraceParams(traceSrcNodeId || node.id, r.prefix, r.vrf);
+              setTraceParams(node.id, r.prefix, r.vrf, undefined, undefined, null, null);
               runTrace();
             }}
           >

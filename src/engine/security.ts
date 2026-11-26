@@ -54,11 +54,12 @@ export function evaluatePreRoutingDnat(
 ): { dstIp: string; note?: string } {
   if (!rules || rules.length === 0) return { dstIp };
 
+  const dstAf = detectAddressFamily(dstIp);
   const sorted = [...rules].filter((r) => r.type === 'dnat').sort((a, b) => a.seq - b.seq);
   for (const r of sorted) {
     if (!matchesCidrOrAny(srcIp, r.srcCidr)) continue;
     if (!matchesCidrOrAny(dstIp, r.dstCidr)) continue;
-    if (r.translatedIp) {
+    if (r.translatedIp && (!dstAf || detectAddressFamily(r.translatedIp) === dstAf)) {
       return {
         dstIp: r.translatedIp,
         note: `DNAT ${dstIp} → ${r.translatedIp} (${r.name})`,
@@ -75,11 +76,12 @@ export function evaluatePostRoutingSnat(
 ): { srcIp: string; note?: string } {
   if (!rules || rules.length === 0) return { srcIp };
 
+  const srcAf = detectAddressFamily(srcIp);
   const sorted = [...rules].filter((r) => r.type === 'snat').sort((a, b) => a.seq - b.seq);
   for (const r of sorted) {
     if (!matchesCidrOrAny(srcIp, r.srcCidr)) continue;
     if (!matchesCidrOrAny(dstIp, r.dstCidr)) continue;
-    if (r.translatedIp) {
+    if (r.translatedIp && (!srcAf || detectAddressFamily(r.translatedIp) === srcAf)) {
       return {
         srcIp: r.translatedIp,
         note: `SNAT ${srcIp} → ${r.translatedIp} (${r.name})`,

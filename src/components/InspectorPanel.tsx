@@ -45,6 +45,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
   const [newLinkDstIf, setNewLinkDstIf] = useState('');
   const [newLinkType, setNewLinkType] = useState<'ethernet' | 'ipsec'>('ethernet');
   const [advProtoExpanded, setAdvProtoExpanded] = useState(false);
+  const [inputResetNonce, setInputResetNonce] = useState(0);
 
   useEffect(() => {
     setNewLinkTargetId('');
@@ -156,22 +157,22 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
           <Card size="small" title={`AD Overrides (${(VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).shortLabel} defaults)`}>
             <div className="grid grid-cols-3 gap-2">
               {caps.adProtocols.map((proto) => (
-                  <div key={proto} className="flex items-center justify-between gap-1">
-                    <span className="text-[11px] uppercase text-slate-400">{proto}</span>
-                    <InputNumber
-                      size="small"
-                      placeholder={String((VENDOR_DEFAULT_AD[node.vendor] ?? VENDOR_DEFAULT_AD['cisco-ios-xe'])[proto])}
-                      value={node.adOverrides[proto] ?? null}
-                      onChange={(val) => {
-                        const nextOverrides = { ...node.adOverrides };
-                        if (val === null || val === undefined) delete nextOverrides[proto];
-                        else nextOverrides[proto] = val;
-                        updateNode(node.id, { adOverrides: nextOverrides });
-                      }}
-                      style={{ width: 64 }}
-                    />
-                  </div>
-                )
+                <div key={proto} className="flex items-center justify-between gap-1">
+                  <span className="text-[11px] uppercase text-slate-400">{proto}</span>
+                  <InputNumber
+                    size="small"
+                    placeholder={String((VENDOR_DEFAULT_AD[node.vendor] ?? VENDOR_DEFAULT_AD['cisco-ios-xe'])[proto])}
+                    value={node.adOverrides[proto] ?? null}
+                    onChange={(val) => {
+                      const nextOverrides = { ...node.adOverrides };
+                      if (val === null || val === undefined) delete nextOverrides[proto];
+                      else nextOverrides[proto] = val;
+                      updateNode(node.id, { adOverrides: nextOverrides });
+                    }}
+                    style={{ width: 64 }}
+                  />
+                </div>
+              )
               )}
             </div>
           </Card>
@@ -182,242 +183,242 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             node.vendor === 'gcp-cloud' ||
             node.vendor === 'oci-cloud' ||
             node.vendor === 'cloudflare-mwan') && (
-            <Card size="small" title="Cloud Routing Policy">
-              <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-2">
+              <Card size="small" title="Cloud Routing Policy">
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="mb-1 text-[11px] text-slate-400">Region / Edge</div>
+                      <Input
+                        size="small"
+                        placeholder={
+                          node.vendor === 'azure-cloud'
+                            ? 'eastus'
+                            : node.vendor === 'gcp-cloud'
+                              ? 'us-central1'
+                              : node.vendor === 'oci-cloud'
+                                ? 'us-ashburn-1'
+                                : node.vendor === 'cloudflare-mwan'
+                                  ? 'global-anycast'
+                                  : 'us-east-1'
+                        }
+                        value={node.cloudConfig?.region ?? ''}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, region: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    {node.vendor === 'gcp-cloud' && (
+                      <div>
+                        <div className="mb-1 text-[11px] text-slate-400">Dynamic Routing Mode</div>
+                        <Select
+                          size="small"
+                          className="w-full"
+                          value={node.cloudConfig?.dynamicRoutingMode ?? 'global'}
+                          onChange={(val: 'regional' | 'global') =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, dynamicRoutingMode: val },
+                            })
+                          }
+                          options={[
+                            { label: 'GLOBAL', value: 'global' },
+                            { label: 'REGIONAL', value: 'regional' },
+                          ]}
+                        />
+                      </div>
+                    )}
+                    {node.vendor === 'gcp-cloud' && (
+                      <div>
+                        <div className="mb-1 text-[11px] text-slate-400">Default Route Priority</div>
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          max={65535}
+                          className="!w-full"
+                          value={node.cloudConfig?.defaultRoutePriority ?? 1000}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, defaultRoutePriority: val ?? 1000 },
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {node.vendor !== 'cloudflare-mwan' && (
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">
+                          Prefer Private Circuit over IPsec VPN
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          DX / ExpressRoute / Interconnect / FastConnect beats IPsec BGP
+                        </div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={node.cloudConfig?.preferPrivateCircuit !== false}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, preferPrivateCircuit: checked },
+                          })
+                        }
+                      />
+                    </div>
+                  )}
+
+                  {(node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') && (
+                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-300">Appliance Mode Support</div>
+                        <div className="text-[10px] text-slate-400">Symmetric AZ flow pinning for inspection firewalls</div>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={!!node.cloudConfig?.applianceMode}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            cloudConfig: { ...node.cloudConfig, applianceMode: checked },
+                          })
+                        }
+                      />
+                    </div>
+                  )}
+
+                  {node.vendor === 'azure-cloud' && (
+                    <>
+                      <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                        <div>
+                          <div className="text-[11px] font-medium text-slate-300">UDR Overrides BGP Routes</div>
+                          <div className="text-[10px] text-slate-400">Static User-Defined Routes take priority over BGP</div>
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={node.cloudConfig?.udrOverridesBgp !== false}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, udrOverridesBgp: checked },
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                        <div>
+                          <div className="text-[11px] font-medium text-slate-300">Disable BGP Route Propagation</div>
+                          <div className="text-[10px] text-slate-400">Suppresses ExpressRoute/VPN BGP routes on this route table</div>
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={!!node.cloudConfig?.disableBgpPropagation}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, disableBgpPropagation: checked },
+                            })
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {node.vendor === 'gcp-cloud' && (
+                    <>
+                      <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                        <div>
+                          <div className="text-[11px] font-medium text-slate-300">Private Google Access (PGA)</div>
+                          <div className="text-[10px] text-slate-400">Private routes to 199.36.153.8/30 & 199.36.153.4/30</div>
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={!!node.cloudConfig?.privateGoogleAccess}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, privateGoogleAccess: checked },
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                        <div>
+                          <div className="text-[11px] font-medium text-slate-300">Advertise PGA to On-Prem (BGP)</div>
+                          <div className="text-[10px] text-slate-400">Advertises Google API VIPs over Interconnect / VPN</div>
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={!!node.cloudConfig?.pgaOnPremAdvertise}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              cloudConfig: {
+                                ...node.cloudConfig,
+                                pgaOnPremAdvertise: checked,
+                                ...(checked ? { privateGoogleAccess: true } : {}),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
+                        <div>
+                          <div className="text-[11px] font-medium text-slate-300">Network Connectivity Center (NCC) Hub</div>
+                          <div className="text-[10px] text-slate-400">Transitive hub-and-spoke across VPC & hybrid spokes</div>
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={!!node.cloudConfig?.nccHubEnabled}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              cloudConfig: { ...node.cloudConfig, nccHubEnabled: checked },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <div className="mb-1 text-[11px] text-slate-400">
+                          Private Service Connect (PSC) / PSA CIDRs
+                        </div>
+                        <Select
+                          mode="tags"
+                          size="small"
+                          className="w-full"
+                          tokenSeparators={[',', ' ']}
+                          placeholder="Type CIDR and press Enter (e.g. 10.240.0.10/32)"
+                          value={node.cloudConfig?.pscEndpoints ?? []}
+                          onChange={(vals: string[]) =>
+                            updateNode(node.id, {
+                              cloudConfig: {
+                                ...node.cloudConfig,
+                                pscEndpoints: vals.map((s) => s.trim()).filter(Boolean),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+
                   <div>
-                    <div className="mb-1 text-[11px] text-slate-400">Region / Edge</div>
-                    <Input
+                    <div className="mb-1 text-[11px] text-slate-400">Blackhole CIDRs</div>
+                    <Select
+                      mode="tags"
                       size="small"
-                      placeholder={
-                        node.vendor === 'azure-cloud'
-                          ? 'eastus'
-                          : node.vendor === 'gcp-cloud'
-                            ? 'us-central1'
-                            : node.vendor === 'oci-cloud'
-                              ? 'us-ashburn-1'
-                              : node.vendor === 'cloudflare-mwan'
-                                ? 'global-anycast'
-                                : 'us-east-1'
-                      }
-                      value={node.cloudConfig?.region ?? ''}
-                      onChange={(e) =>
+                      className="w-full"
+                      tokenSeparators={[',', ' ']}
+                      placeholder="Type CIDR and press Enter (e.g. 192.0.2.0/24)"
+                      value={node.cloudConfig?.blackholeCidrs ?? []}
+                      onChange={(vals: string[]) =>
                         updateNode(node.id, {
-                          cloudConfig: { ...node.cloudConfig, region: e.target.value || undefined },
+                          cloudConfig: {
+                            ...node.cloudConfig,
+                            blackholeCidrs: vals.map((s) => s.trim()).filter(Boolean),
+                          },
                         })
                       }
                     />
                   </div>
-                  {node.vendor === 'gcp-cloud' && (
-                    <div>
-                      <div className="mb-1 text-[11px] text-slate-400">Dynamic Routing Mode</div>
-                      <Select
-                        size="small"
-                        className="w-full"
-                        value={node.cloudConfig?.dynamicRoutingMode ?? 'global'}
-                        onChange={(val: 'regional' | 'global') =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, dynamicRoutingMode: val },
-                          })
-                        }
-                        options={[
-                          { label: 'GLOBAL', value: 'global' },
-                          { label: 'REGIONAL', value: 'regional' },
-                        ]}
-                      />
-                    </div>
-                  )}
-                  {node.vendor === 'gcp-cloud' && (
-                    <div>
-                      <div className="mb-1 text-[11px] text-slate-400">Default Route Priority</div>
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        max={65535}
-                        className="!w-full"
-                        value={node.cloudConfig?.defaultRoutePriority ?? 1000}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, defaultRoutePriority: val ?? 1000 },
-                          })
-                        }
-                      />
-                    </div>
-                  )}
                 </div>
-
-                {node.vendor !== 'cloudflare-mwan' && (
-                  <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                    <div>
-                      <div className="text-[11px] font-medium text-slate-300">
-                        Prefer Private Circuit over IPsec VPN
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        DX / ExpressRoute / Interconnect / FastConnect beats IPsec BGP
-                      </div>
-                    </div>
-                    <Switch
-                      size="small"
-                      checked={node.cloudConfig?.preferPrivateCircuit !== false}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          cloudConfig: { ...node.cloudConfig, preferPrivateCircuit: checked },
-                        })
-                      }
-                    />
-                  </div>
-                )}
-
-                {(node.vendor === 'aws-cloud' || node.vendor === 'aws-cloudwan') && (
-                  <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                    <div>
-                      <div className="text-[11px] font-medium text-slate-300">Appliance Mode Support</div>
-                      <div className="text-[10px] text-slate-400">Symmetric AZ flow pinning for inspection firewalls</div>
-                    </div>
-                    <Switch
-                      size="small"
-                      checked={!!node.cloudConfig?.applianceMode}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          cloudConfig: { ...node.cloudConfig, applianceMode: checked },
-                        })
-                      }
-                    />
-                  </div>
-                )}
-
-                {node.vendor === 'azure-cloud' && (
-                  <>
-                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                      <div>
-                        <div className="text-[11px] font-medium text-slate-300">UDR Overrides BGP Routes</div>
-                        <div className="text-[10px] text-slate-400">Static User-Defined Routes take priority over BGP</div>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={node.cloudConfig?.udrOverridesBgp !== false}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, udrOverridesBgp: checked },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                      <div>
-                        <div className="text-[11px] font-medium text-slate-300">Disable BGP Route Propagation</div>
-                        <div className="text-[10px] text-slate-400">Suppresses ExpressRoute/VPN BGP routes on this route table</div>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={!!node.cloudConfig?.disableBgpPropagation}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, disableBgpPropagation: checked },
-                          })
-                        }
-                      />
-                    </div>
-                  </>
-                )}
-
-                {node.vendor === 'gcp-cloud' && (
-                  <>
-                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                      <div>
-                        <div className="text-[11px] font-medium text-slate-300">Private Google Access (PGA)</div>
-                        <div className="text-[10px] text-slate-400">Private routes to 199.36.153.8/30 & 199.36.153.4/30</div>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={!!node.cloudConfig?.privateGoogleAccess}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, privateGoogleAccess: checked },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                      <div>
-                        <div className="text-[11px] font-medium text-slate-300">Advertise PGA to On-Prem (BGP)</div>
-                        <div className="text-[10px] text-slate-400">Advertises Google API VIPs over Interconnect / VPN</div>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={!!node.cloudConfig?.pgaOnPremAdvertise}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            cloudConfig: {
-                              ...node.cloudConfig,
-                              pgaOnPremAdvertise: checked,
-                              ...(checked ? { privateGoogleAccess: true } : {}),
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between rounded border border-slate-700/60 px-2.5 py-1.5">
-                      <div>
-                        <div className="text-[11px] font-medium text-slate-300">Network Connectivity Center (NCC) Hub</div>
-                        <div className="text-[10px] text-slate-400">Transitive hub-and-spoke across VPC & hybrid spokes</div>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={!!node.cloudConfig?.nccHubEnabled}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            cloudConfig: { ...node.cloudConfig, nccHubEnabled: checked },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="mb-1 text-[11px] text-slate-400">
-                        Private Service Connect (PSC) / PSA CIDRs
-                      </div>
-                      <Select
-                        mode="tags"
-                        size="small"
-                        className="w-full"
-                        tokenSeparators={[',', ' ']}
-                        placeholder="Type CIDR and press Enter (e.g. 10.240.0.10/32)"
-                        value={node.cloudConfig?.pscEndpoints ?? []}
-                        onChange={(vals: string[]) =>
-                          updateNode(node.id, {
-                            cloudConfig: {
-                              ...node.cloudConfig,
-                              pscEndpoints: vals.map((s) => s.trim()).filter(Boolean),
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                  </>
-                )}
-
-                <div>
-                  <div className="mb-1 text-[11px] text-slate-400">Blackhole CIDRs</div>
-                  <Select
-                    mode="tags"
-                    size="small"
-                    className="w-full"
-                    tokenSeparators={[',', ' ']}
-                    placeholder="Type CIDR and press Enter (e.g. 192.0.2.0/24)"
-                    value={node.cloudConfig?.blackholeCidrs ?? []}
-                    onChange={(vals: string[]) =>
-                      updateNode(node.id, {
-                        cloudConfig: {
-                          ...node.cloudConfig,
-                          blackholeCidrs: vals.map((s) => s.trim()).filter(Boolean),
-                        },
-                      })
-                    }
-                  />
-                </div>
-              </div>
-            </Card>
-          )}
+              </Card>
+            )}
         </div>
       ),
     },
@@ -454,10 +455,17 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   title="Assign VRF to interface (create additional VRFs in the VRFs tab)"
                   value={iface.vrf || 'default'}
                   onChange={(val) => {
-                    if (!vrfs.includes(val) && node.vendor !== 'forcepoint-ngfw') {
-                      updateNode(node.id, { vrfs: [...vrfs, val] });
+                    const needsVrf = !vrfs.includes(val) && node.vendor !== 'forcepoint-ngfw';
+                    if (needsVrf) {
+                      updateNode(node.id, {
+                        vrfs: [...vrfs, val],
+                        interfaces: node.interfaces.map((i) =>
+                          i.id === iface.id ? { ...i, vrf: val } : i
+                        ),
+                      });
+                    } else {
+                      updateInterface(node.id, iface.id, { vrf: val });
                     }
-                    updateInterface(node.id, iface.id, { vrf: val });
                   }}
                   options={Array.from(
                     new Set([
@@ -994,11 +1002,19 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                           min={0}
                           max={63}
                           value={iface.qosPolicy?.dscpMark ?? null}
-                          onChange={(val) =>
-                            updateInterface(node.id, iface.id, {
-                              qosPolicy: val !== null ? { ...iface.qosPolicy, dscpMark: val } : undefined,
-                            })
-                          }
+                          onChange={(val) => {
+                            if (val !== null) {
+                              updateInterface(node.id, iface.id, {
+                                qosPolicy: { ...iface.qosPolicy, dscpMark: val },
+                              });
+                            } else {
+                              const { dscpMark: _removed, ...restQos } = iface.qosPolicy ?? {};
+                              void _removed;
+                              updateInterface(node.id, iface.id, {
+                                qosPolicy: Object.keys(restQos).length > 0 ? restQos : undefined,
+                              });
+                            }
+                          }}
                         />
                         <Select
                           size="small"
@@ -1047,14 +1063,23 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
           <Button
             size="small"
             icon={<PlusOutlined />}
-            onClick={() =>
+            onClick={() => {
+              const prefix = (VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).defaultInterfacePrefix;
+              let nextNum = node.interfaces.length + 1;
+              while (
+                node.interfaces.some(
+                  (i) => i.name.toLowerCase() === `${prefix}${nextNum}`.toLowerCase()
+                )
+              ) {
+                nextNum++;
+              }
               addInterface(node.id, {
                 id: `if-${Date.now()}`,
-                name: `${(VENDOR_METADATA[node.vendor] ?? VENDOR_METADATA['cisco-ios-xe']).defaultInterfacePrefix}${node.interfaces.length + 1}`,
-                cidr: `10.100.${node.interfaces.length + 1}.1/24`,
+                name: `${prefix}${nextNum}`,
+                cidr: `10.100.${nextNum}.1/24`,
                 vrf: 'default',
-              })
-            }
+              });
+            }}
           >
             Add Interface
           </Button>
@@ -1106,72 +1131,72 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         { value: 'vrrp', label: caps.fhrp.vrrpLabel },
                       ]}
                     />
-                  <InputNumber
-                    size="small"
-                    className="col-span-2 !w-full"
-                    value={grp.groupId}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
-                          x.id === grp.id ? { ...x, groupId: val ?? 10 } : x
-                        ),
-                      })
-                    }
-                  />
-                  <Select
-                    size="small"
-                    className="col-span-3"
-                    value={grp.interfaceId}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
-                          x.id === grp.id ? { ...x, interfaceId: val } : x
-                        ),
-                      })
-                    }
-                    options={node.interfaces.map((i) => ({ value: i.id, label: i.name }))}
-                  />
-                  <Input
-                    size="small"
-                    className="col-span-3"
-                    value={grp.virtualIp}
-                    style={{ fontFamily: 'monospace' }}
-                    onChange={(e) =>
-                      updateNode(node.id, {
-                        fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
-                          x.id === grp.id ? { ...x, virtualIp: e.target.value } : x
-                        ),
-                      })
-                    }
-                  />
-                  <InputNumber
-                    size="small"
-                    className="col-span-1 !w-full"
-                    value={grp.priority}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
-                          x.id === grp.id ? { ...x, priority: val ?? 100 } : x
-                        ),
-                      })
-                    }
-                  />
-                  <Button
-                    size="small"
-                    danger
-                    type="text"
-                    className="col-span-1"
-                    icon={<DeleteOutlined />}
-                    onClick={() =>
-                      updateNode(node.id, {
-                        fhrpGroups: (node.fhrpGroups ?? []).filter((x) => x.id !== grp.id),
-                      })
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </Card>
+                    <InputNumber
+                      size="small"
+                      className="col-span-2 !w-full"
+                      value={grp.groupId}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
+                            x.id === grp.id ? { ...x, groupId: val ?? 10 } : x
+                          ),
+                        })
+                      }
+                    />
+                    <Select
+                      size="small"
+                      className="col-span-3"
+                      value={grp.interfaceId}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
+                            x.id === grp.id ? { ...x, interfaceId: val } : x
+                          ),
+                        })
+                      }
+                      options={node.interfaces.map((i) => ({ value: i.id, label: i.name }))}
+                    />
+                    <Input
+                      size="small"
+                      className="col-span-3"
+                      value={grp.virtualIp}
+                      style={{ fontFamily: 'monospace' }}
+                      onChange={(e) =>
+                        updateNode(node.id, {
+                          fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
+                            x.id === grp.id ? { ...x, virtualIp: e.target.value } : x
+                          ),
+                        })
+                      }
+                    />
+                    <InputNumber
+                      size="small"
+                      className="col-span-1 !w-full"
+                      value={grp.priority}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          fhrpGroups: (node.fhrpGroups ?? []).map((x) =>
+                            x.id === grp.id ? { ...x, priority: val ?? 100 } : x
+                          ),
+                        })
+                      }
+                    />
+                    <Button
+                      size="small"
+                      danger
+                      type="text"
+                      className="col-span-1"
+                      icon={<DeleteOutlined />}
+                      onClick={() =>
+                        updateNode(node.id, {
+                          fhrpGroups: (node.fhrpGroups ?? []).filter((x) => x.id !== grp.id),
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            </Card>
           )}
         </div>
       ),
@@ -1274,17 +1299,17 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         staticRoutes: node.staticRoutes.map((x) =>
                           x.id === sr.id
                             ? {
-                                ...x,
-                                azureNextHopType: val,
-                                nextHop:
-                                  val === 'None'
-                                    ? 'blackhole'
-                                    : val === 'Internet'
-                                      ? 'internet'
-                                      : val === 'VnetLocal'
-                                        ? '0.0.0.0'
-                                        : x.nextHop,
-                              }
+                              ...x,
+                              azureNextHopType: val,
+                              nextHop:
+                                val === 'None'
+                                  ? 'blackhole'
+                                  : val === 'Internet'
+                                    ? 'internet'
+                                    : val === 'VnetLocal'
+                                      ? '0.0.0.0'
+                                      : x.nextHop,
+                            }
                             : x
                         ),
                       })
@@ -1308,19 +1333,19 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         staticRoutes: node.staticRoutes.map((x) =>
                           x.id === sr.id
                             ? {
-                                ...x,
-                                awsTargetType: val,
-                                nextHop:
-                                  val === 'igw'
-                                    ? 'igw'
-                                    : val === 'nat'
-                                      ? 'nat-gw'
-                                      : val === 'blackhole'
-                                        ? 'blackhole'
-                                        : val === 'local'
-                                          ? '0.0.0.0'
-                                          : x.nextHop,
-                              }
+                              ...x,
+                              awsTargetType: val,
+                              nextHop:
+                                val === 'igw'
+                                  ? 'igw'
+                                  : val === 'nat'
+                                    ? 'nat-gw'
+                                    : val === 'blackhole'
+                                      ? 'blackhole'
+                                      : val === 'local'
+                                        ? '0.0.0.0'
+                                        : x.nextHop,
+                            }
                             : x
                         ),
                       })
@@ -1347,15 +1372,15 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         staticRoutes: node.staticRoutes.map((x) =>
                           x.id === sr.id
                             ? {
-                                ...x,
-                                gcpNextHopType: val,
-                                nextHop:
-                                  val === 'default-internet-gateway'
-                                    ? 'gcp-igw'
-                                    : val === 'cloud-nat'
-                                      ? 'gcp-nat'
-                                      : x.nextHop,
-                              }
+                              ...x,
+                              gcpNextHopType: val,
+                              nextHop:
+                                val === 'default-internet-gateway'
+                                  ? 'gcp-igw'
+                                  : val === 'cloud-nat'
+                                    ? 'gcp-nat'
+                                    : x.nextHop,
+                            }
                             : x
                         ),
                       })
@@ -1462,17 +1487,32 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             {(node.tracks ?? []).map((t, idx) => (
               <div key={idx} className="grid grid-cols-12 items-center gap-1.5">
                 <Input
+                  key={`${node.id}-track-${idx}-${t.id}-${inputResetNonce}`}
                   size="small"
                   className="col-span-3"
                   placeholder="ID"
-                  value={t.id}
-                  onChange={(e) =>
+                  defaultValue={t.id}
+                  onBlur={(e) => {
+                    const nextTrackId = e.target.value.trim();
+                    if (!nextTrackId) {
+                      setInputResetNonce((n) => n + 1);
+                      return;
+                    }
+                    if (nextTrackId === t.id) return;
+                    if ((node.tracks ?? []).some((x, i) => i !== idx && x.id === nextTrackId)) {
+                      setInputResetNonce((n) => n + 1);
+                      return;
+                    }
                     updateNode(node.id, {
                       tracks: (node.tracks ?? []).map((x, i) =>
-                        i === idx ? { ...x, id: e.target.value } : x
+                        i === idx ? { ...x, id: nextTrackId } : x
                       ),
-                    })
-                  }
+                      staticRoutes: node.staticRoutes.map((sr) =>
+                        sr.trackId === t.id ? { ...sr, trackId: nextTrackId } : sr
+                      ),
+                    });
+                  }}
+                  onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
                 />
                 <Input
                   size="small"
@@ -1509,6 +1549,9 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                   onClick={() =>
                     updateNode(node.id, {
                       tracks: (node.tracks ?? []).filter((_, i) => i !== idx),
+                      staticRoutes: node.staticRoutes.map((sr) =>
+                        sr.trackId === t.id ? { ...sr, trackId: undefined } : sr
+                      ),
                     })
                   }
                 />
@@ -1719,1207 +1762,1209 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       children: (
         <div className="space-y-2.5">
           {(caps.igps.ospf || caps.igps.eigrp || caps.igps.isis || caps.igps.rip) && (
-          <Card size="small">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              {caps.igps.ospf && (
-              <Space>
-                <span className="font-semibold text-emerald-300">OSPF</span>
-                <Switch
-                  size="small"
-                  checked={node.ospf.enabled}
-                  onChange={(checked) =>
-                    updateNode(node.id, { ospf: { ...node.ospf, enabled: checked } })
-                  }
-                />
-              </Space>
-              )}
-              {(caps.igps.eigrp || node.eigrp?.enabled) && (
-              <Space>
-                <span className="font-semibold text-sky-300">EIGRP</span>
-                <InputNumber
-                  size="small"
-                  style={{ width: 68 }}
-                  value={node.eigrp?.asn ?? 100}
-                  onChange={(val) =>
-                    updateNode(node.id, {
-                      eigrp: {
-                        ...(node.eigrp ?? {}),
-                        enabled: node.eigrp?.enabled ?? false,
-                        asn: val ?? 100,
-                        networks: node.eigrp?.networks ?? [],
-                      },
-                    })
-                  }
-                />
-                <Switch
-                  size="small"
-                  checked={node.eigrp?.enabled ?? false}
-                  onChange={(checked) =>
-                    updateNode(node.id, {
-                      eigrp: {
-                        ...(node.eigrp ?? {}),
-                        enabled: checked,
-                        asn: node.eigrp?.asn ?? 100,
-                        networks: node.eigrp?.networks ?? [],
-                      },
-                    })
-                  }
-                />
-              </Space>
-              )}
-              {(caps.igps.isis || node.isis?.enabled) && (
-              <Space>
-                <span className="font-semibold text-amber-300">IS-IS</span>
-                <Select
-                  size="small"
-                  style={{ width: 78 }}
-                  value={node.isis?.level ?? 'L1-L2'}
-                  onChange={(val) =>
-                    updateNode(node.id, {
-                      isis: {
-                        ...(node.isis ?? {}),
-                        enabled: node.isis?.enabled ?? false,
-                        level: val,
-                        networks: node.isis?.networks ?? [],
-                      },
-                    })
-                  }
-                  options={[
-                    { value: 'L1', label: 'L1' },
-                    { value: 'L2', label: 'L2' },
-                    { value: 'L1-L2', label: 'L1-L2' },
-                  ]}
-                />
-                <Switch
-                  size="small"
-                  checked={node.isis?.enabled ?? false}
-                  onChange={(checked) =>
-                    updateNode(node.id, {
-                      isis: {
-                        ...(node.isis ?? {}),
-                        enabled: checked,
-                        net: node.isis?.net,
-                        level: node.isis?.level ?? 'L1-L2',
-                        networks: node.isis?.networks ?? [],
-                      },
-                    })
-                  }
-                />
-              </Space>
-              )}
-              {(caps.igps.rip || node.rip?.enabled) && (
-              <Space>
-                <span className="font-semibold text-teal-300">RIP</span>
-                <Switch
-                  size="small"
-                  checked={node.rip?.enabled ?? false}
-                  onChange={(checked) =>
-                    updateNode(node.id, {
-                      rip: {
-                        enabled: checked,
-                        version: node.rip?.version ?? 2,
-                        defaultOriginate: node.rip?.defaultOriginate,
-                        networks: node.rip?.networks ?? [],
-                      },
-                    })
-                  }
-                />
-              </Space>
-              )}
-            </div>
-            {node.ospf.enabled && (
-              <div className="mt-2.5 space-y-2 border-t border-slate-800 pt-2">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+            <Card size="small">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                {caps.igps.ospf && (
+                  <Space>
+                    <span className="font-semibold text-emerald-300">OSPF</span>
                     <Switch
                       size="small"
-                      checked={Boolean(node.ospf.defaultOriginate)}
+                      checked={node.ospf.enabled}
                       onChange={(checked) =>
-                        updateNode(node.id, {
-                          ospf: { ...node.ospf, defaultOriginate: checked },
-                        })
+                        updateNode(node.id, { ospf: { ...node.ospf, enabled: checked } })
                       }
                     />
-                    <span>default-information originate</span>
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
-                    <Switch
-                      size="small"
-                      checked={Boolean(node.ospf.bfd)}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          ospf: { ...node.ospf, bfd: checked },
-                        })
-                      }
-                    />
-                    <span>BFD</span>
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
-                    <Switch
-                      size="small"
-                      checked={Boolean(node.ospf.maxMetricRouterLsa)}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          ospf: { ...node.ospf, maxMetricRouterLsa: checked },
-                        })
-                      }
-                    />
-                    <span>max-metric</span>
-                  </label>
-                  {['cisco-ios-xe', 'cisco-nx-os', 'cisco-ios-xr', 'arista-eos', 'aruba-aos-cx', 'juniper-junos', 'mikrotik-routeros', 'forcepoint-ngfw', 'fortigate', 'checkpoint-gaia', 'vyos'].includes(
-                    node.vendor
-                  ) && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-slate-400">Ref BW (Mbps)</span>
-                      <InputNumber
-                        size="small"
-                        min={1}
-                        placeholder="100"
-                        style={{ width: 78 }}
-                        value={node.ospf.referenceBandwidth ?? null}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            ospf: { ...node.ospf, referenceBandwidth: val ?? undefined },
-                          })
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div>
-                    <div className="mb-0.5 text-slate-400">OSPF Auth Key</div>
-                    <Input
-                      size="small"
-                      placeholder="Optional process auth key"
-                      value={node.ospf.authKey ?? ''}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          ospf: { ...node.ospf, authKey: e.target.value || undefined },
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    {(() => {
-                      const nonBackboneAreas = Array.from(
-                        new Set([
-                          ...node.interfaces
-                            .map((i) => i.ospfArea)
-                            .filter((a): a is number => a !== undefined && a !== 0),
-                          ...node.ospf.networks
-                            .map((n) => n.area)
-                            .filter((a) => a !== 0),
-                          ...Object.keys(node.ospf.areaTypes ?? {})
-                            .map(Number)
-                            .filter((a) => Number.isFinite(a) && a !== 0),
-                        ])
-                      ).sort((a, b) => a - b);
-                      const areasToShow = nonBackboneAreas.length ? nonBackboneAreas : [1];
-                      return areasToShow.map((areaId) => (
-                        <div key={areaId}>
-                          <div className="mb-0.5 text-slate-400">Area {areaId} Type</div>
-                          <Select
-                            size="small"
-                            className="w-full"
-                            value={node.ospf.areaTypes?.[areaId] ?? 'normal'}
-                            onChange={(val) =>
-                              updateNode(node.id, {
-                                ospf: {
-                                  ...node.ospf,
-                                  areaTypes: { ...(node.ospf.areaTypes ?? {}), [areaId]: val },
-                                },
-                              })
-                            }
-                            options={[
-                              { value: 'normal', label: 'Normal' },
-                              { value: 'stub', label: 'Stub' },
-                              { value: 'totally-stubby', label: 'Totally Stubby' },
-                              { value: 'nssa', label: 'NSSA' },
-                            ]}
-                          />
-                          {node.ospf.areaTypes?.[areaId] === 'nssa' && (
-                            <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-300">
-                              <Switch
-                                size="small"
-                                checked={Boolean(node.ospf.nssaNoSummary?.[areaId])}
-                                onChange={(checked) =>
-                                  updateNode(node.id, {
-                                    ospf: {
-                                      ...node.ospf,
-                                      nssaNoSummary: { ...(node.ospf.nssaNoSummary ?? {}), [areaId]: checked },
-                                    },
-                                  })
-                                }
-                              />
-                              <span>Area {areaId} NSSA no-summary</span>
-                            </label>
-                          )}
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                </div>
-                <div>
-                  <div className="mb-1 text-[11px] text-slate-400">
-                    OSPF Area Ranges &amp; Virtual Links
-                  </div>
-                  <div className="space-y-1.5">
-                    {(node.ospf.areaRanges ?? []).map((ar) => (
-                      <div key={ar.id} className="grid grid-cols-12 gap-1">
-                        <InputNumber
-                          size="small"
-                          className="col-span-3 !w-full"
-                          placeholder="Area"
-                          value={ar.area}
-                          onChange={(val) =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                areaRanges: (node.ospf.areaRanges ?? []).map((x) =>
-                                  x.id === ar.id ? { ...x, area: Number(val ?? 0) } : x
-                                ),
-                              },
-                            })
-                          }
-                        />
-                        <Input
-                          size="small"
-                          className="col-span-8"
-                          placeholder="Summary CIDR"
-                          value={ar.prefix}
-                          onChange={(e) =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                areaRanges: (node.ospf.areaRanges ?? []).map((x) =>
-                                  x.id === ar.id ? { ...x, prefix: e.target.value } : x
-                                ),
-                              },
-                            })
-                          }
-                        />
-                        <Button
-                          size="small"
-                          danger
-                          type="text"
-                          className="col-span-1"
-                          icon={<DeleteOutlined />}
-                          onClick={() =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                areaRanges: (node.ospf.areaRanges ?? []).filter((x) => x.id !== ar.id),
-                              },
-                            })
-                          }
-                        />
-                      </div>
-                    ))}
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            areaRanges: [
-                              ...(node.ospf.areaRanges ?? []),
-                              { id: `oar-${Date.now()}`, area: 1, prefix: '10.1.0.0/16' },
-                            ],
-                          },
-                        })
-                      }
-                    >
-                      Add Area Range
-                    </Button>
-                    {(node.ospf.virtualLinks ?? []).map((vl) => (
-                      <div key={vl.id} className="grid grid-cols-12 gap-1">
-                        <InputNumber
-                          size="small"
-                          className="col-span-3 !w-full"
-                          placeholder="Transit"
-                          value={vl.transitArea}
-                          onChange={(val) =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                virtualLinks: (node.ospf.virtualLinks ?? []).map((x) =>
-                                  x.id === vl.id ? { ...x, transitArea: Number(val ?? 1) } : x
-                                ),
-                              },
-                            })
-                          }
-                        />
-                        <Input
-                          size="small"
-                          className="col-span-8"
-                          placeholder="Peer Router-ID"
-                          value={vl.peerRouterId}
-                          onChange={(e) =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                virtualLinks: (node.ospf.virtualLinks ?? []).map((x) =>
-                                  x.id === vl.id ? { ...x, peerRouterId: e.target.value } : x
-                                ),
-                              },
-                            })
-                          }
-                        />
-                        <Button
-                          size="small"
-                          danger
-                          type="text"
-                          className="col-span-1"
-                          icon={<DeleteOutlined />}
-                          onClick={() =>
-                            updateNode(node.id, {
-                              ospf: {
-                                ...node.ospf,
-                                virtualLinks: (node.ospf.virtualLinks ?? []).filter((x) => x.id !== vl.id),
-                              },
-                            })
-                          }
-                        />
-                      </div>
-                    ))}
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            virtualLinks: [
-                              ...(node.ospf.virtualLinks ?? []),
-                              { id: `ovl-${Date.now()}`, transitArea: 1, peerRouterId: '2.2.2.2' },
-                            ],
-                          },
-                        })
-                      }
-                    >
-                      Add Virtual Link
-                    </Button>
-                  </div>
-                </div>
-                <div>
-                  <div className="mb-1 text-[11px] text-slate-400">
-                    OSPF Passive Interfaces
-                  </div>
-                  <Select
-                    mode="multiple"
-                    size="small"
-                    className="w-full"
-                    placeholder="Select passive interfaces (suppresses OSPF hello)"
-                    value={node.interfaces.filter((i) => i.passive).map((i) => i.id)}
-                    onChange={(selectedIds: string[]) => {
-                      const set = new Set(selectedIds);
-                      updateNode(node.id, {
-                        interfaces: node.interfaces.map((i) => ({
-                          ...i,
-                          passive: set.has(i.id),
-                        })),
-                      });
-                    }}
-                    options={node.interfaces.map((i) => ({
-                      value: i.id,
-                      label: `${i.name} (${i.cidr})`,
-                    }))}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-[11px] font-semibold text-emerald-300">
-                  <span>OSPF Network Advertisements</span>
-                  <Button
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={() =>
-                      updateNode(node.id, {
-                        ospf: {
-                          ...node.ospf,
-                          networks: [
-                            ...node.ospf.networks,
-                            {
-                              id: `ospf-net-${Date.now()}`,
-                              prefix: '10.0.0.0/24',
-                              area: 0,
-                              vrf: 'default',
-                            },
-                          ],
-                        },
-                      })
-                    }
-                  >
-                    Add Network
-                  </Button>
-                </div>
-                {node.ospf.networks.map((on) => (
-                  <div key={on.id} className="grid grid-cols-12 items-center gap-1">
-                    <Input
-                      size="small"
-                      className="col-span-5"
-                      value={on.prefix}
-                      placeholder="10.0.0.0/24"
-                      style={{ fontFamily: 'monospace' }}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            networks: node.ospf.networks.map((x) =>
-                              x.id === on.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
+                  </Space>
+                )}
+                {(caps.igps.eigrp || node.eigrp?.enabled) && (
+                  <Space>
+                    <span className="font-semibold text-sky-300">EIGRP</span>
                     <InputNumber
                       size="small"
-                      className="col-span-2 !w-full"
-                      min={0}
-                      placeholder="Area"
-                      value={on.area}
+                      style={{ width: 68 }}
+                      value={node.eigrp?.asn ?? 100}
                       onChange={(val) =>
                         updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            networks: node.ospf.networks.map((x) =>
-                              x.id === on.id ? { ...x, area: val ?? 0 } : x
-                            ),
+                          eigrp: {
+                            ...(node.eigrp ?? {}),
+                            enabled: node.eigrp?.enabled ?? false,
+                            asn: val ?? 100,
+                            networks: node.eigrp?.networks ?? [],
                           },
                         })
                       }
                     />
-                    <InputNumber
+                    <Switch
                       size="small"
-                      className="col-span-2 !w-full"
-                      min={1}
-                      placeholder="Cost"
-                      value={on.cost ?? null}
-                      onChange={(val) =>
+                      checked={node.eigrp?.enabled ?? false}
+                      onChange={(checked) =>
                         updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            networks: node.ospf.networks.map((x) =>
-                              x.id === on.id ? { ...x, cost: val ?? undefined } : x
-                            ),
+                          eigrp: {
+                            ...(node.eigrp ?? {}),
+                            enabled: checked,
+                            asn: node.eigrp?.asn ?? 100,
+                            networks: node.eigrp?.networks ?? [],
                           },
                         })
                       }
                     />
+                  </Space>
+                )}
+                {(caps.igps.isis || node.isis?.enabled) && (
+                  <Space>
+                    <span className="font-semibold text-amber-300">IS-IS</span>
                     <Select
                       size="small"
-                      className="col-span-2"
-                      value={on.vrf || 'default'}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            networks: node.ospf.networks.map((x) =>
-                              x.id === on.id ? { ...x, vrf: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={vrfs.map((v) => ({ value: v, label: v }))}
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          ospf: {
-                            ...node.ospf,
-                            networks: node.ospf.networks.filter((x) => x.id !== on.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {node.eigrp?.enabled && (
-              <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="font-semibold text-sky-300">EIGRP Network Advertisements</span>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1 text-[11px]">
-                      <span className="text-slate-400">Var</span>
-                      <InputNumber
-                        size="small"
-                        min={1}
-                        max={128}
-                        style={{ width: 52 }}
-                        value={node.eigrp?.variance ?? 1}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            eigrp: {
-                              ...(node.eigrp ?? {}),
-                              enabled: true,
-                              asn: node.eigrp?.asn ?? 100,
-                              networks: node.eigrp?.networks ?? [],
-                              variance: val ?? 1,
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center gap-1 text-[11px]" title="EIGRP K-values (K1,K2,K3,K4,K5)">
-                      <span className="text-slate-400">K:</span>
-                      <Input
-                        key={`${node.id}-${(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}`}
-                        size="small"
-                        style={{ width: 84, fontFamily: 'monospace' }}
-                        placeholder="1,0,1,0,0"
-                        defaultValue={(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}
-                        onBlur={(e) => {
-                          const parts = e.target.value.split(/[,\s]+/).filter(Boolean).map(Number);
-                          if (parts.length === 5 && parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) {
-                            updateNode(node.id, {
-                              eigrp: {
-                                ...(node.eigrp ?? {}),
-                                enabled: true,
-                                asn: node.eigrp?.asn ?? 100,
-                                networks: node.eigrp?.networks ?? [],
-                                kValues: parts as [number, number, number, number, number],
-                              },
-                            });
-                          }
-                        }}
-                        onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
-                      />
-                    </div>
-                    <label className="flex cursor-pointer items-center gap-1 text-slate-300">
-                      <Switch
-                        size="small"
-                        checked={Boolean(node.eigrp?.bfd)}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            eigrp: {
-                              ...(node.eigrp ?? {}),
-                              enabled: true,
-                              asn: node.eigrp?.asn ?? 100,
-                              networks: node.eigrp?.networks ?? [],
-                              bfd: checked,
-                            },
-                          })
-                        }
-                      />
-                      <span>BFD</span>
-                    </label>
-                    <Button
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={() =>
-                      updateNode(node.id, {
-                        eigrp: {
-                          ...(node.eigrp ?? {}),
-                          enabled: true,
-                          asn: node.eigrp?.asn ?? 100,
-                          networks: [
-                            ...(node.eigrp?.networks ?? []),
-                            {
-                              id: `eigrp-net-${Date.now()}`,
-                              prefix: '10.20.0.0/24',
-                              vrf: 'default',
-                            },
-                          ],
-                        },
-                      })
-                    }
-                  >
-                    Add Network
-                  </Button>
-                  </div>
-                </div>
-                {(node.eigrp?.networks ?? []).map((en) => (
-                  <div key={en.id} className="grid grid-cols-12 items-center gap-1">
-                    <Input
-                      size="small"
-                      className="col-span-5"
-                      value={en.prefix}
-                      placeholder="10.20.0.0/24"
-                      style={{ fontFamily: 'monospace' }}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...(node.eigrp ?? {}),
-                            enabled: true,
-                            asn: node.eigrp?.asn ?? 100,
-                            networks: (node.eigrp?.networks ?? []).map((x) =>
-                              x.id === en.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <InputNumber
-                      size="small"
-                      className="col-span-2 !w-full"
-                      min={1}
-                      placeholder="BW"
-                      value={en.bandwidth ?? null}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...(node.eigrp ?? {}),
-                            enabled: true,
-                            asn: node.eigrp?.asn ?? 100,
-                            networks: (node.eigrp?.networks ?? []).map((x) =>
-                              x.id === en.id ? { ...x, bandwidth: val ?? undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <InputNumber
-                      size="small"
-                      className="col-span-2 !w-full"
-                      min={1}
-                      placeholder="Dly"
-                      value={en.delay ?? null}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...(node.eigrp ?? {}),
-                            enabled: true,
-                            asn: node.eigrp?.asn ?? 100,
-                            networks: (node.eigrp?.networks ?? []).map((x) =>
-                              x.id === en.id ? { ...x, delay: val ?? undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Select
-                      size="small"
-                      className="col-span-2"
-                      value={en.vrf || 'default'}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...(node.eigrp ?? {}),
-                            enabled: true,
-                            asn: node.eigrp?.asn ?? 100,
-                            networks: (node.eigrp?.networks ?? []).map((x) =>
-                              x.id === en.id ? { ...x, vrf: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={vrfs.map((v) => ({ value: v, label: v }))}
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...(node.eigrp ?? { enabled: true, asn: 100 }),
-                            enabled: true,
-                            asn: node.eigrp?.asn ?? 100,
-                            networks: (node.eigrp?.networks ?? []).filter((x) => x.id !== en.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-                {(node.eigrp?.summaries ?? []).map((s) => (
-                  <div key={s.id} className="flex items-center gap-1">
-                    <Input
-                      size="small"
-                      placeholder="EIGRP Summary CIDR"
-                      value={s.prefix}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...node.eigrp!,
-                            summaries: (node.eigrp?.summaries ?? []).map((x) =>
-                              x.id === s.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          eigrp: {
-                            ...node.eigrp!,
-                            summaries: (node.eigrp?.summaries ?? []).filter((x) => x.id !== s.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  onClick={() =>
-                    updateNode(node.id, {
-                      eigrp: {
-                        ...node.eigrp!,
-                        summaries: [
-                          ...(node.eigrp?.summaries ?? []),
-                          { id: `esum-${Date.now()}`, prefix: '10.10.0.0/16' },
-                        ],
-                      },
-                    })
-                  }
-                >
-                  Add EIGRP Summary
-                </Button>
-              </div>
-            )}
-
-            {node.isis?.enabled && (
-              <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
-                <div className="flex items-center gap-2 text-[11px]">
-                  <span className="text-slate-400">IS-IS NET</span>
-                  <Input
-                    size="small"
-                    className="flex-1"
-                    placeholder="49.0001.0000.0000.0001.00"
-                    style={{ fontFamily: 'monospace' }}
-                    value={node.isis?.net ?? ''}
-                    onChange={(e) =>
-                      updateNode(node.id, {
-                        isis: {
-                          ...(node.isis ?? { level: 'L1-L2', networks: [] }),
-                          enabled: true,
-                          net: e.target.value,
-                        },
-                      })
-                    }
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                  <label className="flex cursor-pointer items-center gap-1 text-slate-300">
-                    <Switch
-                      size="small"
-                      checked={Boolean(node.isis?.overloadBit)}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, overloadBit: checked },
-                        })
-                      }
-                    />
-                    <span>Overload Bit</span>
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-1 text-slate-300">
-                    <Switch
-                      size="small"
-                      checked={Boolean(node.isis?.multiTopologyV6)}
-                      onChange={(checked) =>
-                        updateNode(node.id, {
-                          isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, multiTopologyV6: checked },
-                        })
-                      }
-                    />
-                    <span>IPv6 MT</span>
-                  </label>
-                  <Select
-                    size="small"
-                    style={{ width: 96 }}
-                    value={node.isis?.metricStyle ?? 'wide'}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, metricStyle: val },
-                      })
-                    }
-                    options={[
-                      { value: 'wide', label: 'Wide Met' },
-                      { value: 'narrow', label: 'Narrow' },
-                    ]}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="font-semibold text-amber-300">IS-IS Network Advertisements</span>
-                  <div className="flex items-center gap-2">
-                    <label className="flex cursor-pointer items-center gap-1 text-slate-300">
-                      <Switch
-                        size="small"
-                        checked={Boolean(node.isis?.bfd)}
-                        onChange={(checked) =>
-                          updateNode(node.id, {
-                            isis: {
-                              enabled: true,
-                              level: node.isis?.level ?? 'L1-L2',
-                              networks: node.isis?.networks ?? [],
-                              ...node.isis,
-                              bfd: checked,
-                            },
-                          })
-                        }
-                      />
-                      <span>BFD</span>
-                    </label>
-                    <Button
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={() =>
-                      updateNode(node.id, {
-                        isis: {
-                          ...(node.isis ?? { level: 'L1-L2' }),
-                          enabled: true,
-                          networks: [
-                            ...(node.isis?.networks ?? []),
-                            {
-                              id: `isis-net-${Date.now()}`,
-                              prefix: '10.30.0.0/24',
-                              level: node.isis?.level === 'L1' ? 'L1' : 'L2',
-                              vrf: 'default',
-                            },
-                          ],
-                        },
-                      })
-                    }
-                  >
-                    Add Network
-                  </Button>
-                  </div>
-                </div>
-                {(node.isis?.networks ?? []).map((inw) => (
-                  <div key={inw.id} className="grid grid-cols-12 items-center gap-1">
-                    <Input
-                      size="small"
-                      className="col-span-5"
-                      value={inw.prefix}
-                      placeholder="10.30.0.0/24"
-                      style={{ fontFamily: 'monospace' }}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...(node.isis ?? { level: 'L1-L2' }),
-                            enabled: true,
-                            networks: (node.isis?.networks ?? []).map((x) =>
-                              x.id === inw.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Select
-                      size="small"
-                      className="col-span-2"
-                      value={inw.level ?? 'L2'}
+                      style={{ width: 78 }}
+                      value={node.isis?.level ?? 'L1-L2'}
                       onChange={(val) =>
                         updateNode(node.id, {
                           isis: {
-                            ...(node.isis ?? { level: 'L1-L2' }),
-                            enabled: true,
-                            networks: (node.isis?.networks ?? []).map((x) =>
-                              x.id === inw.id ? { ...x, level: val } : x
-                            ),
+                            ...(node.isis ?? {}),
+                            enabled: node.isis?.enabled ?? false,
+                            level: val,
+                            networks: node.isis?.networks ?? [],
                           },
                         })
                       }
                       options={[
                         { value: 'L1', label: 'L1' },
                         { value: 'L2', label: 'L2' },
+                        { value: 'L1-L2', label: 'L1-L2' },
                       ]}
                     />
-                    <InputNumber
-                      size="small"
-                      className="col-span-2 !w-full"
-                      min={1}
-                      placeholder="Met"
-                      value={inw.metric ?? null}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...(node.isis ?? { level: 'L1-L2' }),
-                            enabled: true,
-                            networks: (node.isis?.networks ?? []).map((x) =>
-                              x.id === inw.id ? { ...x, metric: val ?? undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Select
-                      size="small"
-                      className="col-span-2"
-                      value={inw.vrf || 'default'}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...(node.isis ?? { level: 'L1-L2' }),
-                            enabled: true,
-                            networks: (node.isis?.networks ?? []).map((x) =>
-                              x.id === inw.id ? { ...x, vrf: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={vrfs.map((v) => ({ value: v, label: v }))}
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...(node.isis ?? { level: 'L1-L2' }),
-                            enabled: true,
-                            networks: (node.isis?.networks ?? []).filter((x) => x.id !== inw.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-                {(node.isis?.summaries ?? []).map((s) => (
-                  <div key={s.id} className="flex items-center gap-1">
-                    <Input
-                      size="small"
-                      placeholder="IS-IS Summary CIDR"
-                      value={s.prefix}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...node.isis!,
-                            summaries: (node.isis?.summaries ?? []).map((x) =>
-                              x.id === s.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...node.isis!,
-                            summaries: (node.isis?.summaries ?? []).filter((x) => x.id !== s.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  onClick={() =>
-                    updateNode(node.id, {
-                      isis: {
-                        ...node.isis!,
-                        summaries: [
-                          ...(node.isis?.summaries ?? []),
-                          { id: `isum-${Date.now()}`, prefix: '10.20.0.0/16' },
-                        ],
-                      },
-                    })
-                  }
-                >
-                  Add IS-IS Summary
-                </Button>
-                {node.isis?.level === 'L1-L2' && (
-                  <div className="space-y-1 pt-1">
-                    {(node.isis?.leakL2ToL1 ?? []).map((lk) => (
-                      <div key={lk.id} className="flex items-center gap-1">
-                        <Input
-                          size="small"
-                          placeholder="L2→L1 Leak CIDR"
-                          value={lk.prefix}
-                          style={{ fontFamily: 'monospace' }}
-                          onChange={(e) =>
-                            updateNode(node.id, {
-                              isis: {
-                                ...node.isis!,
-                                leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).map((x) =>
-                                  x.id === lk.id ? { ...x, prefix: e.target.value } : x
-                                ),
-                              },
-                            })
-                          }
-                        />
-                        <Button
-                          size="small"
-                          danger
-                          type="text"
-                          icon={<DeleteOutlined />}
-                          onClick={() =>
-                            updateNode(node.id, {
-                              isis: {
-                                ...node.isis!,
-                                leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).filter((x) => x.id !== lk.id),
-                              },
-                            })
-                          }
-                        />
-                      </div>
-                    ))}
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          isis: {
-                            ...node.isis!,
-                            leakL2ToL1: [
-                              ...(node.isis?.leakL2ToL1 ?? []),
-                              { id: `ileak-${Date.now()}`, prefix: '10.0.0.0/8' },
-                            ],
-                          },
-                        })
-                      }
-                    >
-                      Add L2→L1 Leak
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {node.rip?.enabled && (
-              <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
                     <Switch
                       size="small"
-                      checked={Boolean(node.rip.defaultOriginate)}
+                      checked={node.isis?.enabled ?? false}
+                      onChange={(checked) =>
+                        updateNode(node.id, {
+                          isis: {
+                            ...(node.isis ?? {}),
+                            enabled: checked,
+                            net: node.isis?.net,
+                            level: node.isis?.level ?? 'L1-L2',
+                            networks: node.isis?.networks ?? [],
+                          },
+                        })
+                      }
+                    />
+                  </Space>
+                )}
+                {(caps.igps.rip || node.rip?.enabled) && (
+                  <Space>
+                    <span className="font-semibold text-teal-300">RIP</span>
+                    <Switch
+                      size="small"
+                      checked={node.rip?.enabled ?? false}
                       onChange={(checked) =>
                         updateNode(node.id, {
                           rip: {
-                            enabled: true,
+                            enabled: checked,
                             version: node.rip?.version ?? 2,
-                            defaultOriginate: checked,
+                            defaultOriginate: node.rip?.defaultOriginate,
                             networks: node.rip?.networks ?? [],
                           },
                         })
                       }
                     />
-                    <span>default-information originate</span>
-                  </label>
-                  <Select
-                    size="small"
-                    style={{ width: 82 }}
-                    value={node.rip?.version ?? 2}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        rip: {
-                          enabled: true,
-                          version: val,
-                          defaultOriginate: node.rip?.defaultOriginate,
-                          networks: node.rip?.networks ?? [],
-                        },
-                      })
-                    }
-                    options={[
-                      { value: 1, label: 'RIPv1' },
-                      { value: 2, label: 'RIPv2' },
-                    ]}
-                  />
+                  </Space>
+                )}
+              </div>
+              {node.ospf.enabled && (
+                <div className="mt-2.5 space-y-2 border-t border-slate-800 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.ospf.defaultOriginate)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            ospf: { ...node.ospf, defaultOriginate: checked },
+                          })
+                        }
+                      />
+                      <span>default-information originate</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.ospf.bfd)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            ospf: { ...node.ospf, bfd: checked },
+                          })
+                        }
+                      />
+                      <span>BFD</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.ospf.maxMetricRouterLsa)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            ospf: { ...node.ospf, maxMetricRouterLsa: checked },
+                          })
+                        }
+                      />
+                      <span>max-metric</span>
+                    </label>
+                    {['cisco-ios-xe', 'cisco-nx-os', 'cisco-ios-xr', 'arista-eos', 'aruba-aos-cx', 'juniper-junos', 'mikrotik-routeros', 'forcepoint-ngfw', 'fortigate', 'checkpoint-gaia', 'vyos'].includes(
+                      node.vendor
+                    ) && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">Ref BW (Mbps)</span>
+                          <InputNumber
+                            size="small"
+                            min={1}
+                            placeholder="100"
+                            style={{ width: 78 }}
+                            value={node.ospf.referenceBandwidth ?? null}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                ospf: { ...node.ospf, referenceBandwidth: val ?? undefined },
+                              })
+                            }
+                          />
+                        </div>
+                      )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <div className="mb-0.5 text-slate-400">OSPF Auth Key</div>
+                      <Input
+                        size="small"
+                        placeholder="Optional process auth key"
+                        value={node.ospf.authKey ?? ''}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            ospf: { ...node.ospf, authKey: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      {(() => {
+                        const nonBackboneAreas = Array.from(
+                          new Set([
+                            ...node.interfaces
+                              .map((i) => i.ospfArea)
+                              .filter((a): a is number => a !== undefined && a !== 0),
+                            ...node.ospf.networks
+                              .map((n) => n.area)
+                              .filter((a) => a !== 0),
+                            ...Object.keys(node.ospf.areaTypes ?? {})
+                              .map(Number)
+                              .filter((a) => Number.isFinite(a) && a !== 0),
+                          ])
+                        ).sort((a, b) => a - b);
+                        const areasToShow = nonBackboneAreas.length ? nonBackboneAreas : [1];
+                        return areasToShow.map((areaId) => (
+                          <div key={areaId}>
+                            <div className="mb-0.5 text-slate-400">Area {areaId} Type</div>
+                            <Select
+                              size="small"
+                              className="w-full"
+                              value={node.ospf.areaTypes?.[areaId] ?? 'normal'}
+                              onChange={(val) =>
+                                updateNode(node.id, {
+                                  ospf: {
+                                    ...node.ospf,
+                                    areaTypes: { ...(node.ospf.areaTypes ?? {}), [areaId]: val },
+                                  },
+                                })
+                              }
+                              options={[
+                                { value: 'normal', label: 'Normal' },
+                                { value: 'stub', label: 'Stub' },
+                                { value: 'totally-stubby', label: 'Totally Stubby' },
+                                { value: 'nssa', label: 'NSSA' },
+                              ]}
+                            />
+                            {node.ospf.areaTypes?.[areaId] === 'nssa' && (
+                              <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-300">
+                                <Switch
+                                  size="small"
+                                  checked={Boolean(node.ospf.nssaNoSummary?.[areaId])}
+                                  onChange={(checked) =>
+                                    updateNode(node.id, {
+                                      ospf: {
+                                        ...node.ospf,
+                                        nssaNoSummary: { ...(node.ospf.nssaNoSummary ?? {}), [areaId]: checked },
+                                      },
+                                    })
+                                  }
+                                />
+                                <span>Area {areaId} NSSA no-summary</span>
+                              </label>
+                            )}
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] text-slate-400">
+                      OSPF Area Ranges &amp; Virtual Links
+                    </div>
+                    <div className="space-y-1.5">
+                      {(node.ospf.areaRanges ?? []).map((ar) => (
+                        <div key={ar.id} className="grid grid-cols-12 gap-1">
+                          <InputNumber
+                            size="small"
+                            className="col-span-3 !w-full"
+                            placeholder="Area"
+                            value={ar.area}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  areaRanges: (node.ospf.areaRanges ?? []).map((x) =>
+                                    x.id === ar.id ? { ...x, area: Number(val ?? 0) } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Input
+                            size="small"
+                            className="col-span-8"
+                            placeholder="Summary CIDR"
+                            value={ar.prefix}
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  areaRanges: (node.ospf.areaRanges ?? []).map((x) =>
+                                    x.id === ar.id ? { ...x, prefix: e.target.value } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Button
+                            size="small"
+                            danger
+                            type="text"
+                            className="col-span-1"
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  areaRanges: (node.ospf.areaRanges ?? []).filter((x) => x.id !== ar.id),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              areaRanges: [
+                                ...(node.ospf.areaRanges ?? []),
+                                { id: `oar-${Date.now()}`, area: 1, prefix: '10.1.0.0/16' },
+                              ],
+                            },
+                          })
+                        }
+                      >
+                        Add Area Range
+                      </Button>
+                      {(node.ospf.virtualLinks ?? []).map((vl) => (
+                        <div key={vl.id} className="grid grid-cols-12 gap-1">
+                          <InputNumber
+                            size="small"
+                            className="col-span-3 !w-full"
+                            placeholder="Transit"
+                            value={vl.transitArea}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  virtualLinks: (node.ospf.virtualLinks ?? []).map((x) =>
+                                    x.id === vl.id ? { ...x, transitArea: Number(val ?? 1) } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Input
+                            size="small"
+                            className="col-span-8"
+                            placeholder="Peer Router-ID"
+                            value={vl.peerRouterId}
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  virtualLinks: (node.ospf.virtualLinks ?? []).map((x) =>
+                                    x.id === vl.id ? { ...x, peerRouterId: e.target.value } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Button
+                            size="small"
+                            danger
+                            type="text"
+                            className="col-span-1"
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                ospf: {
+                                  ...node.ospf,
+                                  virtualLinks: (node.ospf.virtualLinks ?? []).filter((x) => x.id !== vl.id),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              virtualLinks: [
+                                ...(node.ospf.virtualLinks ?? []),
+                                { id: `ovl-${Date.now()}`, transitArea: 1, peerRouterId: '2.2.2.2' },
+                              ],
+                            },
+                          })
+                        }
+                      >
+                        Add Virtual Link
+                      </Button>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] text-slate-400">
+                      OSPF Passive Interfaces
+                    </div>
+                    <Select
+                      mode="multiple"
+                      size="small"
+                      className="w-full"
+                      placeholder="Select passive interfaces (suppresses OSPF hello)"
+                      value={node.interfaces.filter((i) => i.passive).map((i) => i.id)}
+                      onChange={(selectedIds: string[]) => {
+                        const set = new Set(selectedIds);
+                        updateNode(node.id, {
+                          interfaces: node.interfaces.map((i) => ({
+                            ...i,
+                            passive: set.has(i.id),
+                          })),
+                        });
+                      }}
+                      options={node.interfaces.map((i) => ({
+                        value: i.id,
+                        label: `${i.name} (${i.cidr})`,
+                      }))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-emerald-300">
+                    <span>OSPF Network Advertisements</span>
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() =>
+                        updateNode(node.id, {
+                          ospf: {
+                            ...node.ospf,
+                            networks: [
+                              ...node.ospf.networks,
+                              {
+                                id: `ospf-net-${Date.now()}`,
+                                prefix: '10.0.0.0/24',
+                                area: 0,
+                                vrf: 'default',
+                              },
+                            ],
+                          },
+                        })
+                      }
+                    >
+                      Add Network
+                    </Button>
+                  </div>
+                  {node.ospf.networks.map((on) => (
+                    <div key={on.id} className="grid grid-cols-12 items-center gap-1">
+                      <Input
+                        size="small"
+                        className="col-span-5"
+                        value={on.prefix}
+                        placeholder="10.0.0.0/24"
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              networks: node.ospf.networks.map((x) =>
+                                x.id === on.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-2 !w-full"
+                        min={0}
+                        placeholder="Area"
+                        value={on.area}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              networks: node.ospf.networks.map((x) =>
+                                x.id === on.id ? { ...x, area: val ?? 0 } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-2 !w-full"
+                        min={1}
+                        placeholder="Cost"
+                        value={on.cost ?? null}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              networks: node.ospf.networks.map((x) =>
+                                x.id === on.id ? { ...x, cost: val ?? undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Select
+                        size="small"
+                        className="col-span-2"
+                        value={on.vrf || 'default'}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              networks: node.ospf.networks.map((x) =>
+                                x.id === on.id ? { ...x, vrf: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={vrfs.map((v) => ({ value: v, label: v }))}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            ospf: {
+                              ...node.ospf,
+                              networks: node.ospf.networks.filter((x) => x.id !== on.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
                 </div>
-                <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300">
-                  <span>RIPv{node.rip?.version ?? 2} Network Advertisements</span>
+              )}
+
+              {node.eigrp?.enabled && (
+                <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-sky-300">EIGRP Network Advertisements</span>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1 text-[11px]">
+                        <span className="text-slate-400">Var</span>
+                        <InputNumber
+                          size="small"
+                          min={1}
+                          max={128}
+                          style={{ width: 52 }}
+                          value={node.eigrp?.variance ?? 1}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              eigrp: {
+                                ...(node.eigrp ?? {}),
+                                enabled: true,
+                                asn: node.eigrp?.asn ?? 100,
+                                networks: node.eigrp?.networks ?? [],
+                                variance: val ?? 1,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center gap-1 text-[11px]" title="EIGRP K-values (K1,K2,K3,K4,K5)">
+                        <span className="text-slate-400">K:</span>
+                        <Input
+                          key={`${node.id}-${(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}-${inputResetNonce}`}
+                          size="small"
+                          style={{ width: 84, fontFamily: 'monospace' }}
+                          placeholder="1,0,1,0,0"
+                          defaultValue={(node.eigrp?.kValues ?? [1, 0, 1, 0, 0]).join(',')}
+                          onBlur={(e) => {
+                            const parts = e.target.value.split(/[,\s]+/).filter(Boolean).map(Number);
+                            if (parts.length === 5 && parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) {
+                              updateNode(node.id, {
+                                eigrp: {
+                                  ...(node.eigrp ?? {}),
+                                  enabled: true,
+                                  asn: node.eigrp?.asn ?? 100,
+                                  networks: node.eigrp?.networks ?? [],
+                                  kValues: parts as [number, number, number, number, number],
+                                },
+                              });
+                            } else {
+                              setInputResetNonce((n) => n + 1);
+                            }
+                          }}
+                          onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+                        />
+                      </div>
+                      <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                        <Switch
+                          size="small"
+                          checked={Boolean(node.eigrp?.bfd)}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              eigrp: {
+                                ...(node.eigrp ?? {}),
+                                enabled: true,
+                                asn: node.eigrp?.asn ?? 100,
+                                networks: node.eigrp?.networks ?? [],
+                                bfd: checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>BFD</span>
+                      </label>
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: [
+                                ...(node.eigrp?.networks ?? []),
+                                {
+                                  id: `eigrp-net-${Date.now()}`,
+                                  prefix: '10.20.0.0/24',
+                                  vrf: 'default',
+                                },
+                              ],
+                            },
+                          })
+                        }
+                      >
+                        Add Network
+                      </Button>
+                    </div>
+                  </div>
+                  {(node.eigrp?.networks ?? []).map((en) => (
+                    <div key={en.id} className="grid grid-cols-12 items-center gap-1">
+                      <Input
+                        size="small"
+                        className="col-span-5"
+                        value={en.prefix}
+                        placeholder="10.20.0.0/24"
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: (node.eigrp?.networks ?? []).map((x) =>
+                                x.id === en.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-2 !w-full"
+                        min={1}
+                        placeholder="BW"
+                        value={en.bandwidth ?? null}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: (node.eigrp?.networks ?? []).map((x) =>
+                                x.id === en.id ? { ...x, bandwidth: val ?? undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-2 !w-full"
+                        min={1}
+                        placeholder="Dly"
+                        value={en.delay ?? null}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: (node.eigrp?.networks ?? []).map((x) =>
+                                x.id === en.id ? { ...x, delay: val ?? undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Select
+                        size="small"
+                        className="col-span-2"
+                        value={en.vrf || 'default'}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? {}),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: (node.eigrp?.networks ?? []).map((x) =>
+                                x.id === en.id ? { ...x, vrf: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={vrfs.map((v) => ({ value: v, label: v }))}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...(node.eigrp ?? { enabled: true, asn: 100 }),
+                              enabled: true,
+                              asn: node.eigrp?.asn ?? 100,
+                              networks: (node.eigrp?.networks ?? []).filter((x) => x.id !== en.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                  {(node.eigrp?.summaries ?? []).map((s) => (
+                    <div key={s.id} className="flex items-center gap-1">
+                      <Input
+                        size="small"
+                        placeholder="EIGRP Summary CIDR"
+                        value={s.prefix}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...node.eigrp!,
+                              summaries: (node.eigrp?.summaries ?? []).map((x) =>
+                                x.id === s.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            eigrp: {
+                              ...node.eigrp!,
+                              summaries: (node.eigrp?.summaries ?? []).filter((x) => x.id !== s.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
                   <Button
                     size="small"
                     icon={<PlusOutlined />}
                     onClick={() =>
                       updateNode(node.id, {
-                        rip: {
-                          enabled: true,
-                          version: node.rip?.version ?? 2,
-                          defaultOriginate: node.rip?.defaultOriginate,
-                          networks: [
-                            ...(node.rip?.networks ?? []),
-                            {
-                              id: `rip-net-${Date.now()}`,
-                              prefix: '10.40.0.0/24',
-                              vrf: 'default',
-                            },
+                        eigrp: {
+                          ...node.eigrp!,
+                          summaries: [
+                            ...(node.eigrp?.summaries ?? []),
+                            { id: `esum-${Date.now()}`, prefix: '10.10.0.0/16' },
                           ],
                         },
                       })
                     }
                   >
-                    Add Network
+                    Add EIGRP Summary
                   </Button>
                 </div>
-                {(node.rip?.networks ?? []).map((rn) => (
-                  <div key={rn.id} className="grid grid-cols-12 items-center gap-1">
+              )}
+
+              {node.isis?.enabled && (
+                <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="text-slate-400">IS-IS NET</span>
                     <Input
                       size="small"
-                      className="col-span-7"
-                      value={rn.prefix}
-                      placeholder="10.40.0.0/24"
+                      className="flex-1"
+                      placeholder="49.0001.0000.0000.0001.00"
                       style={{ fontFamily: 'monospace' }}
+                      value={node.isis?.net ?? ''}
                       onChange={(e) =>
                         updateNode(node.id, {
-                          rip: {
+                          isis: {
+                            ...(node.isis ?? { level: 'L1-L2', networks: [] }),
                             enabled: true,
-                            version: node.rip?.version ?? 2,
-                            defaultOriginate: node.rip?.defaultOriginate,
-                            networks: (node.rip?.networks ?? []).map((x) =>
-                              x.id === rn.id ? { ...x, prefix: e.target.value } : x
-                            ),
+                            net: e.target.value,
                           },
                         })
                       }
                     />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.isis?.overloadBit)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, overloadBit: checked },
+                          })
+                        }
+                      />
+                      <span>Overload Bit</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.isis?.multiTopologyV6)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, multiTopologyV6: checked },
+                          })
+                        }
+                      />
+                      <span>IPv6 MT</span>
+                    </label>
                     <Select
                       size="small"
-                      className="col-span-4"
-                      value={rn.vrf || 'default'}
+                      style={{ width: 96 }}
+                      value={node.isis?.metricStyle ?? 'wide'}
+                      onChange={(val) =>
+                        updateNode(node.id, {
+                          isis: { ...(node.isis ?? { level: 'L1-L2', networks: [] }), enabled: true, metricStyle: val },
+                        })
+                      }
+                      options={[
+                        { value: 'wide', label: 'Wide Met' },
+                        { value: 'narrow', label: 'Narrow' },
+                      ]}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-amber-300">IS-IS Network Advertisements</span>
+                    <div className="flex items-center gap-2">
+                      <label className="flex cursor-pointer items-center gap-1 text-slate-300">
+                        <Switch
+                          size="small"
+                          checked={Boolean(node.isis?.bfd)}
+                          onChange={(checked) =>
+                            updateNode(node.id, {
+                              isis: {
+                                enabled: true,
+                                level: node.isis?.level ?? 'L1-L2',
+                                networks: node.isis?.networks ?? [],
+                                ...node.isis,
+                                bfd: checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>BFD</span>
+                      </label>
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: [
+                                ...(node.isis?.networks ?? []),
+                                {
+                                  id: `isis-net-${Date.now()}`,
+                                  prefix: '10.30.0.0/24',
+                                  level: node.isis?.level === 'L1' ? 'L1' : 'L2',
+                                  vrf: 'default',
+                                },
+                              ],
+                            },
+                          })
+                        }
+                      >
+                        Add Network
+                      </Button>
+                    </div>
+                  </div>
+                  {(node.isis?.networks ?? []).map((inw) => (
+                    <div key={inw.id} className="grid grid-cols-12 items-center gap-1">
+                      <Input
+                        size="small"
+                        className="col-span-5"
+                        value={inw.prefix}
+                        placeholder="10.30.0.0/24"
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: (node.isis?.networks ?? []).map((x) =>
+                                x.id === inw.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Select
+                        size="small"
+                        className="col-span-2"
+                        value={inw.level ?? 'L2'}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: (node.isis?.networks ?? []).map((x) =>
+                                x.id === inw.id ? { ...x, level: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={[
+                          { value: 'L1', label: 'L1' },
+                          { value: 'L2', label: 'L2' },
+                        ]}
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-2 !w-full"
+                        min={1}
+                        placeholder="Met"
+                        value={inw.metric ?? null}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: (node.isis?.networks ?? []).map((x) =>
+                                x.id === inw.id ? { ...x, metric: val ?? undefined } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Select
+                        size="small"
+                        className="col-span-2"
+                        value={inw.vrf || 'default'}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: (node.isis?.networks ?? []).map((x) =>
+                                x.id === inw.id ? { ...x, vrf: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={vrfs.map((v) => ({ value: v, label: v }))}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...(node.isis ?? { level: 'L1-L2' }),
+                              enabled: true,
+                              networks: (node.isis?.networks ?? []).filter((x) => x.id !== inw.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                  {(node.isis?.summaries ?? []).map((s) => (
+                    <div key={s.id} className="flex items-center gap-1">
+                      <Input
+                        size="small"
+                        placeholder="IS-IS Summary CIDR"
+                        value={s.prefix}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...node.isis!,
+                              summaries: (node.isis?.summaries ?? []).map((x) =>
+                                x.id === s.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...node.isis!,
+                              summaries: (node.isis?.summaries ?? []).filter((x) => x.id !== s.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                  <Button
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={() =>
+                      updateNode(node.id, {
+                        isis: {
+                          ...node.isis!,
+                          summaries: [
+                            ...(node.isis?.summaries ?? []),
+                            { id: `isum-${Date.now()}`, prefix: '10.20.0.0/16' },
+                          ],
+                        },
+                      })
+                    }
+                  >
+                    Add IS-IS Summary
+                  </Button>
+                  {node.isis?.level === 'L1-L2' && (
+                    <div className="space-y-1 pt-1">
+                      {(node.isis?.leakL2ToL1 ?? []).map((lk) => (
+                        <div key={lk.id} className="flex items-center gap-1">
+                          <Input
+                            size="small"
+                            placeholder="L2→L1 Leak CIDR"
+                            value={lk.prefix}
+                            style={{ fontFamily: 'monospace' }}
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                isis: {
+                                  ...node.isis!,
+                                  leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).map((x) =>
+                                    x.id === lk.id ? { ...x, prefix: e.target.value } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Button
+                            size="small"
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                isis: {
+                                  ...node.isis!,
+                                  leakL2ToL1: (node.isis?.leakL2ToL1 ?? []).filter((x) => x.id !== lk.id),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            isis: {
+                              ...node.isis!,
+                              leakL2ToL1: [
+                                ...(node.isis?.leakL2ToL1 ?? []),
+                                { id: `ileak-${Date.now()}`, prefix: '10.0.0.0/8' },
+                              ],
+                            },
+                          })
+                        }
+                      >
+                        Add L2→L1 Leak
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {node.rip?.enabled && (
+                <div className="mt-2.5 space-y-1.5 border-t border-slate-800 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.rip.defaultOriginate)}
+                        onChange={(checked) =>
+                          updateNode(node.id, {
+                            rip: {
+                              enabled: true,
+                              version: node.rip?.version ?? 2,
+                              defaultOriginate: checked,
+                              networks: node.rip?.networks ?? [],
+                            },
+                          })
+                        }
+                      />
+                      <span>default-information originate</span>
+                    </label>
+                    <Select
+                      size="small"
+                      style={{ width: 82 }}
+                      value={node.rip?.version ?? 2}
                       onChange={(val) =>
                         updateNode(node.id, {
                           rip: {
                             enabled: true,
-                            version: node.rip?.version ?? 2,
+                            version: val,
                             defaultOriginate: node.rip?.defaultOriginate,
-                            networks: (node.rip?.networks ?? []).map((x) =>
-                              x.id === rn.id ? { ...x, vrf: val } : x
-                            ),
+                            networks: node.rip?.networks ?? [],
                           },
                         })
                       }
-                      options={vrfs.map((v) => ({ value: v, label: v }))}
+                      options={[
+                        { value: 1, label: 'RIPv1' },
+                        { value: 2, label: 'RIPv2' },
+                      ]}
                     />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300">
+                    <span>RIPv{node.rip?.version ?? 2} Network Advertisements</span>
                     <Button
                       size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
+                      icon={<PlusOutlined />}
                       onClick={() =>
                         updateNode(node.id, {
                           rip: {
                             enabled: true,
                             version: node.rip?.version ?? 2,
                             defaultOriginate: node.rip?.defaultOriginate,
-                            networks: (node.rip?.networks ?? []).filter((x) => x.id !== rn.id),
+                            networks: [
+                              ...(node.rip?.networks ?? []),
+                              {
+                                id: `rip-net-${Date.now()}`,
+                                prefix: '10.40.0.0/24',
+                                vrf: 'default',
+                              },
+                            ],
                           },
                         })
                       }
-                    />
+                    >
+                      Add Network
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
-          </Card>
+                  {(node.rip?.networks ?? []).map((rn) => (
+                    <div key={rn.id} className="grid grid-cols-12 items-center gap-1">
+                      <Input
+                        size="small"
+                        className="col-span-7"
+                        value={rn.prefix}
+                        placeholder="10.40.0.0/24"
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            rip: {
+                              enabled: true,
+                              version: node.rip?.version ?? 2,
+                              defaultOriginate: node.rip?.defaultOriginate,
+                              networks: (node.rip?.networks ?? []).map((x) =>
+                                x.id === rn.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Select
+                        size="small"
+                        className="col-span-4"
+                        value={rn.vrf || 'default'}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            rip: {
+                              enabled: true,
+                              version: node.rip?.version ?? 2,
+                              defaultOriginate: node.rip?.defaultOriginate,
+                              networks: (node.rip?.networks ?? []).map((x) =>
+                                x.id === rn.id ? { ...x, vrf: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={vrfs.map((v) => ({ value: v, label: v }))}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            rip: {
+                              enabled: true,
+                              version: node.rip?.version ?? 2,
+                              defaultOriginate: node.rip?.defaultOriginate,
+                              networks: (node.rip?.networks ?? []).filter((x) => x.id !== rn.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
           )}
 
           {node.vendor === 'cisco-nx-os' && (
@@ -3311,422 +3356,422 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
           )}
 
           {(caps.lisp || Boolean(node.lisp?.enabled)) && (
-          <Card
-            size="small"
-            title={<span className="text-sky-300">LISP (EID / RLOC Overlay)</span>}
-            extra={
-              <Switch
-                size="small"
-                checked={Boolean(node.lisp?.enabled)}
-                onChange={(checked) =>
-                  updateNode(node.id, {
-                    lisp: {
-                      role: node.lisp?.role ?? 'xtr',
-                      rlocIp: node.lisp?.rlocIp || node.routerId,
-                      instanceId: node.lisp?.instanceId ?? 0,
-                      eidPrefixes: node.lisp?.eidPrefixes ?? [],
-                      ...node.lisp,
-                      enabled: checked,
-                    },
-                  })
-                }
-              />
-            }
-          >
-            {node.lisp?.enabled && (
-              <div className="space-y-2 text-[11px]">
-                <div className="grid grid-cols-12 gap-1.5">
-                  <Select
-                    size="small"
-                    className="col-span-4"
-                    value={node.lisp.role}
-                    onChange={(val) =>
-                      updateNode(node.id, { lisp: { ...node.lisp!, role: val } })
-                    }
-                    options={[
-                      { value: 'xtr', label: 'xTR (ITR/ETR)' },
-                      { value: 'pxtr', label: 'PxTR' },
-                      { value: 'pitr', label: 'PiTR' },
-                      { value: 'petr', label: 'PeTR' },
-                      { value: 'ms-mr', label: 'MS/MR' },
-                    ]}
-                  />
+            <Card
+              size="small"
+              title={<span className="text-sky-300">LISP (EID / RLOC Overlay)</span>}
+              extra={
+                <Switch
+                  size="small"
+                  checked={Boolean(node.lisp?.enabled)}
+                  onChange={(checked) =>
+                    updateNode(node.id, {
+                      lisp: {
+                        role: node.lisp?.role ?? 'xtr',
+                        rlocIp: node.lisp?.rlocIp || node.routerId,
+                        instanceId: node.lisp?.instanceId ?? 0,
+                        eidPrefixes: node.lisp?.eidPrefixes ?? [],
+                        ...node.lisp,
+                        enabled: checked,
+                      },
+                    })
+                  }
+                />
+              }
+            >
+              {node.lisp?.enabled && (
+                <div className="space-y-2 text-[11px]">
+                  <div className="grid grid-cols-12 gap-1.5">
+                    <Select
+                      size="small"
+                      className="col-span-4"
+                      value={node.lisp.role}
+                      onChange={(val) =>
+                        updateNode(node.id, { lisp: { ...node.lisp!, role: val } })
+                      }
+                      options={[
+                        { value: 'xtr', label: 'xTR (ITR/ETR)' },
+                        { value: 'pxtr', label: 'PxTR' },
+                        { value: 'pitr', label: 'PiTR' },
+                        { value: 'petr', label: 'PeTR' },
+                        { value: 'ms-mr', label: 'MS/MR' },
+                      ]}
+                    />
+                    <Input
+                      size="small"
+                      className="col-span-5"
+                      placeholder="RLOC IP"
+                      value={node.lisp.rlocIp}
+                      onChange={(e) =>
+                        updateNode(node.id, { lisp: { ...node.lisp!, rlocIp: e.target.value } })
+                      }
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                    <InputNumber
+                      size="small"
+                      className="col-span-3 !w-full"
+                      placeholder="IID"
+                      value={node.lisp.instanceId ?? 0}
+                      onChange={(val) =>
+                        updateNode(node.id, { lisp: { ...node.lisp!, instanceId: val ?? 0 } })
+                      }
+                    />
+                  </div>
+                  {node.lisp.role !== 'ms-mr' && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="shrink-0 text-slate-400">Map-Server/Resolver</span>
+                      <Input
+                        size="small"
+                        placeholder="e.g. 10.0.0.100"
+                        value={node.lisp.mapServerIp ?? ''}
+                        onChange={(e) =>
+                          updateNode(node.id, { lisp: { ...node.lisp!, mapServerIp: e.target.value || undefined } })
+                        }
+                        style={{ fontFamily: 'monospace' }}
+                      />
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                      <Switch
+                        size="small"
+                        checked={Boolean(node.lisp.bfd)}
+                        onChange={(checked) =>
+                          updateNode(node.id, { lisp: { ...node.lisp!, bfd: checked } })
+                        }
+                      />
+                      <span>RLOC BFD Probing</span>
+                    </label>
+                    {node.lisp.bfd && (
+                      <div className="flex items-center gap-1">
+                        <InputNumber
+                          size="small"
+                          className="!w-14"
+                          placeholder="Tx 50"
+                          min={5}
+                          max={60000}
+                          value={node.lisp.bfdIntervalMs ?? null}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              lisp: { ...node.lisp!, bfdIntervalMs: val ?? undefined },
+                            })
+                          }
+                        />
+                        <InputNumber
+                          size="small"
+                          className="!w-14"
+                          placeholder="Rx 50"
+                          min={5}
+                          max={60000}
+                          value={node.lisp.bfdMinRxMs ?? null}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              lisp: { ...node.lisp!, bfdMinRxMs: val ?? undefined },
+                            })
+                          }
+                        />
+                        <InputNumber
+                          size="small"
+                          className="!w-12"
+                          placeholder="x3"
+                          min={1}
+                          max={50}
+                          value={node.lisp.bfdMultiplier ?? null}
+                          onChange={(val) =>
+                            updateNode(node.id, {
+                              lisp: { ...node.lisp!, bfdMultiplier: val ?? undefined },
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Database-Mapping EID Prefixes</span>
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() =>
+                        updateNode(node.id, {
+                          lisp: {
+                            ...node.lisp!,
+                            eidPrefixes: [
+                              ...(node.lisp?.eidPrefixes ?? []),
+                              {
+                                id: `eid-${Date.now()}`,
+                                prefix: '10.80.1.0/24',
+                                vrf: 'default',
+                                priority: 1,
+                                weight: 100,
+                              },
+                            ],
+                          },
+                        })
+                      }
+                    >
+                      Add EID
+                    </Button>
+                  </div>
+                  {(node.lisp.eidPrefixes ?? []).map((eid) => (
+                    <div key={eid.id} className="grid grid-cols-12 items-center gap-1">
+                      <Input
+                        size="small"
+                        className="col-span-5"
+                        value={eid.prefix}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            lisp: {
+                              ...node.lisp!,
+                              eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
+                                x.id === eid.id ? { ...x, prefix: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                        style={{ fontFamily: 'monospace' }}
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-3 !w-full"
+                        placeholder="Prio"
+                        value={eid.priority ?? 1}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            lisp: {
+                              ...node.lisp!,
+                              eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
+                                x.id === eid.id ? { ...x, priority: val ?? 1 } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <InputNumber
+                        size="small"
+                        className="col-span-3 !w-full"
+                        placeholder="Wt"
+                        value={eid.weight ?? 100}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            lisp: {
+                              ...node.lisp!,
+                              eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
+                                x.id === eid.id ? { ...x, weight: val ?? 100 } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            lisp: {
+                              ...node.lisp!,
+                              eidPrefixes: node.lisp!.eidPrefixes.filter((x) => x.id !== eid.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {(caps.evpn || Boolean(node.evpn?.enabled)) && (
+            <Card
+              size="small"
+              title={<span className="text-violet-300">VXLAN / BGP EVPN (VTEP)</span>}
+              extra={
+                <Switch
+                  size="small"
+                  checked={Boolean(node.evpn?.enabled)}
+                  onChange={(checked) =>
+                    updateNode(node.id, {
+                      evpn: {
+                        vtepIp: node.evpn?.vtepIp || node.routerId,
+                        l3Vni: node.evpn?.l3Vni ?? 50000,
+                        vrf: node.evpn?.vrf ?? 'default',
+                        advertiseConnected: node.evpn?.advertiseConnected ?? true,
+                        ...node.evpn,
+                        enabled: checked,
+                      },
+                    })
+                  }
+                />
+              }
+            >
+              {node.evpn?.enabled && (
+                <div className="grid grid-cols-12 gap-1.5 text-[11px]">
                   <Input
                     size="small"
                     className="col-span-5"
-                    placeholder="RLOC IP"
-                    value={node.lisp.rlocIp}
+                    placeholder="VTEP IP"
+                    value={node.evpn.vtepIp}
                     onChange={(e) =>
-                      updateNode(node.id, { lisp: { ...node.lisp!, rlocIp: e.target.value } })
+                      updateNode(node.id, { evpn: { ...node.evpn!, vtepIp: e.target.value } })
                     }
                     style={{ fontFamily: 'monospace' }}
                   />
                   <InputNumber
                     size="small"
-                    className="col-span-3 !w-full"
-                    placeholder="IID"
-                    value={node.lisp.instanceId ?? 0}
+                    className="col-span-4 !w-full"
+                    placeholder="L3 VNI"
+                    value={node.evpn.l3Vni ?? null}
                     onChange={(val) =>
-                      updateNode(node.id, { lisp: { ...node.lisp!, instanceId: val ?? 0 } })
+                      updateNode(node.id, { evpn: { ...node.evpn!, l3Vni: val ?? undefined } })
                     }
                   />
+                  <Select
+                    size="small"
+                    className="col-span-3"
+                    value={node.evpn.vrf || 'default'}
+                    onChange={(val) =>
+                      updateNode(node.id, { evpn: { ...node.evpn!, vrf: val } })
+                    }
+                    options={vrfs.map((v) => ({ value: v, label: v }))}
+                  />
                 </div>
-                {node.lisp.role !== 'ms-mr' && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="shrink-0 text-slate-400">Map-Server/Resolver</span>
-                    <Input
-                      size="small"
-                      placeholder="e.g. 10.0.0.100"
-                      value={node.lisp.mapServerIp ?? ''}
-                      onChange={(e) =>
-                        updateNode(node.id, { lisp: { ...node.lisp!, mapServerIp: e.target.value || undefined } })
-                      }
-                      style={{ fontFamily: 'monospace' }}
-                    />
-                  </div>
-                )}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
-                    <Switch
-                      size="small"
-                      checked={Boolean(node.lisp.bfd)}
-                      onChange={(checked) =>
-                        updateNode(node.id, { lisp: { ...node.lisp!, bfd: checked } })
-                      }
-                    />
-                    <span>RLOC BFD Probing</span>
-                  </label>
-                  {node.lisp.bfd && (
-                    <div className="flex items-center gap-1">
-                      <InputNumber
-                        size="small"
-                        className="!w-14"
-                        placeholder="Tx 50"
-                        min={5}
-                        max={60000}
-                        value={node.lisp.bfdIntervalMs ?? null}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            lisp: { ...node.lisp!, bfdIntervalMs: val ?? undefined },
-                          })
-                        }
-                      />
-                      <InputNumber
-                        size="small"
-                        className="!w-14"
-                        placeholder="Rx 50"
-                        min={5}
-                        max={60000}
-                        value={node.lisp.bfdMinRxMs ?? null}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            lisp: { ...node.lisp!, bfdMinRxMs: val ?? undefined },
-                          })
-                        }
-                      />
-                      <InputNumber
-                        size="small"
-                        className="!w-12"
-                        placeholder="x3"
-                        min={1}
-                        max={50}
-                        value={node.lisp.bfdMultiplier ?? null}
-                        onChange={(val) =>
-                          updateNode(node.id, {
-                            lisp: { ...node.lisp!, bfdMultiplier: val ?? undefined },
-                          })
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Database-Mapping EID Prefixes</span>
+              )}
+            </Card>
+          )}
+
+          {(caps.mpls || Boolean(node.mplsVpn?.enabled)) && (
+            <Card
+              size="small"
+              title={<span className="text-amber-300">MPLS L3VPN (RD / Route Targets)</span>}
+              extra={
+                <Switch
+                  size="small"
+                  checked={Boolean(node.mplsVpn?.enabled)}
+                  onChange={(checked) =>
+                    updateNode(node.id, {
+                      mplsVpn: {
+                        vrfTargets: node.mplsVpn?.vrfTargets ?? [],
+                        ...node.mplsVpn,
+                        enabled: checked,
+                      },
+                    })
+                  }
+                />
+              }
+            >
+              {node.mplsVpn?.enabled && (
+                <div className="space-y-1.5 text-[11px]">
                   <Button
                     size="small"
                     icon={<PlusOutlined />}
                     onClick={() =>
                       updateNode(node.id, {
-                        lisp: {
-                          ...node.lisp!,
-                          eidPrefixes: [
-                            ...(node.lisp?.eidPrefixes ?? []),
+                        mplsVpn: {
+                          ...node.mplsVpn!,
+                          vrfTargets: [
+                            ...(node.mplsVpn?.vrfTargets ?? []),
                             {
-                              id: `eid-${Date.now()}`,
-                              prefix: '10.80.1.0/24',
-                              vrf: 'default',
-                              priority: 1,
-                              weight: 100,
+                              id: `rt-${Date.now()}`,
+                              vrf: vrfs[0] || 'default',
+                              rd: '65000:100',
+                              importRt: '65000:100',
+                              exportRt: '65000:100',
                             },
                           ],
                         },
                       })
                     }
                   >
-                    Add EID
+                    Add VRF Route Target
                   </Button>
+                  {(node.mplsVpn.vrfTargets ?? []).map((vt) => (
+                    <div key={vt.id} className="grid grid-cols-12 items-center gap-1">
+                      <Select
+                        size="small"
+                        className="col-span-3"
+                        value={vt.vrf}
+                        onChange={(val) =>
+                          updateNode(node.id, {
+                            mplsVpn: {
+                              ...node.mplsVpn!,
+                              vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
+                                x.id === vt.id ? { ...x, vrf: val } : x
+                              ),
+                            },
+                          })
+                        }
+                        options={vrfs.map((v) => ({ value: v, label: v }))}
+                      />
+                      <Input
+                        size="small"
+                        className="col-span-3"
+                        placeholder="RD"
+                        value={vt.rd}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            mplsVpn: {
+                              ...node.mplsVpn!,
+                              vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
+                                x.id === vt.id ? { ...x, rd: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Input
+                        size="small"
+                        className="col-span-2"
+                        placeholder="Imp RT"
+                        value={vt.importRt}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            mplsVpn: {
+                              ...node.mplsVpn!,
+                              vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
+                                x.id === vt.id ? { ...x, importRt: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Input
+                        size="small"
+                        className="col-span-3"
+                        placeholder="Exp RT"
+                        value={vt.exportRt}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            mplsVpn: {
+                              ...node.mplsVpn!,
+                              vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
+                                x.id === vt.id ? { ...x, exportRt: e.target.value } : x
+                              ),
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        className="col-span-1"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            mplsVpn: {
+                              ...node.mplsVpn!,
+                              vrfTargets: node.mplsVpn!.vrfTargets.filter((x) => x.id !== vt.id),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
                 </div>
-                {(node.lisp.eidPrefixes ?? []).map((eid) => (
-                  <div key={eid.id} className="grid grid-cols-12 items-center gap-1">
-                    <Input
-                      size="small"
-                      className="col-span-5"
-                      value={eid.prefix}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          lisp: {
-                            ...node.lisp!,
-                            eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
-                              x.id === eid.id ? { ...x, prefix: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                      style={{ fontFamily: 'monospace' }}
-                    />
-                    <InputNumber
-                      size="small"
-                      className="col-span-3 !w-full"
-                      placeholder="Prio"
-                      value={eid.priority ?? 1}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          lisp: {
-                            ...node.lisp!,
-                            eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
-                              x.id === eid.id ? { ...x, priority: val ?? 1 } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <InputNumber
-                      size="small"
-                      className="col-span-3 !w-full"
-                      placeholder="Wt"
-                      value={eid.weight ?? 100}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          lisp: {
-                            ...node.lisp!,
-                            eidPrefixes: node.lisp!.eidPrefixes.map((x) =>
-                              x.id === eid.id ? { ...x, weight: val ?? 100 } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          lisp: {
-                            ...node.lisp!,
-                            eidPrefixes: node.lisp!.eidPrefixes.filter((x) => x.id !== eid.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-          )}
-
-          {(caps.evpn || Boolean(node.evpn?.enabled)) && (
-          <Card
-            size="small"
-            title={<span className="text-violet-300">VXLAN / BGP EVPN (VTEP)</span>}
-            extra={
-              <Switch
-                size="small"
-                checked={Boolean(node.evpn?.enabled)}
-                onChange={(checked) =>
-                  updateNode(node.id, {
-                    evpn: {
-                      vtepIp: node.evpn?.vtepIp || node.routerId,
-                      l3Vni: node.evpn?.l3Vni ?? 50000,
-                      vrf: node.evpn?.vrf ?? 'default',
-                      advertiseConnected: node.evpn?.advertiseConnected ?? true,
-                      ...node.evpn,
-                      enabled: checked,
-                    },
-                  })
-                }
-              />
-            }
-          >
-            {node.evpn?.enabled && (
-              <div className="grid grid-cols-12 gap-1.5 text-[11px]">
-                <Input
-                  size="small"
-                  className="col-span-5"
-                  placeholder="VTEP IP"
-                  value={node.evpn.vtepIp}
-                  onChange={(e) =>
-                    updateNode(node.id, { evpn: { ...node.evpn!, vtepIp: e.target.value } })
-                  }
-                  style={{ fontFamily: 'monospace' }}
-                />
-                <InputNumber
-                  size="small"
-                  className="col-span-4 !w-full"
-                  placeholder="L3 VNI"
-                  value={node.evpn.l3Vni ?? null}
-                  onChange={(val) =>
-                    updateNode(node.id, { evpn: { ...node.evpn!, l3Vni: val ?? undefined } })
-                  }
-                />
-                <Select
-                  size="small"
-                  className="col-span-3"
-                  value={node.evpn.vrf || 'default'}
-                  onChange={(val) =>
-                    updateNode(node.id, { evpn: { ...node.evpn!, vrf: val } })
-                  }
-                  options={vrfs.map((v) => ({ value: v, label: v }))}
-                />
-              </div>
-            )}
-          </Card>
-          )}
-
-          {(caps.mpls || Boolean(node.mplsVpn?.enabled)) && (
-          <Card
-            size="small"
-            title={<span className="text-amber-300">MPLS L3VPN (RD / Route Targets)</span>}
-            extra={
-              <Switch
-                size="small"
-                checked={Boolean(node.mplsVpn?.enabled)}
-                onChange={(checked) =>
-                  updateNode(node.id, {
-                    mplsVpn: {
-                      vrfTargets: node.mplsVpn?.vrfTargets ?? [],
-                      ...node.mplsVpn,
-                      enabled: checked,
-                    },
-                  })
-                }
-              />
-            }
-          >
-            {node.mplsVpn?.enabled && (
-              <div className="space-y-1.5 text-[11px]">
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  onClick={() =>
-                    updateNode(node.id, {
-                      mplsVpn: {
-                        ...node.mplsVpn!,
-                        vrfTargets: [
-                          ...(node.mplsVpn?.vrfTargets ?? []),
-                          {
-                            id: `rt-${Date.now()}`,
-                            vrf: vrfs[0] || 'default',
-                            rd: '65000:100',
-                            importRt: '65000:100',
-                            exportRt: '65000:100',
-                          },
-                        ],
-                      },
-                    })
-                  }
-                >
-                  Add VRF Route Target
-                </Button>
-                {(node.mplsVpn.vrfTargets ?? []).map((vt) => (
-                  <div key={vt.id} className="grid grid-cols-12 items-center gap-1">
-                    <Select
-                      size="small"
-                      className="col-span-3"
-                      value={vt.vrf}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          mplsVpn: {
-                            ...node.mplsVpn!,
-                            vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
-                              x.id === vt.id ? { ...x, vrf: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={vrfs.map((v) => ({ value: v, label: v }))}
-                    />
-                    <Input
-                      size="small"
-                      className="col-span-3"
-                      placeholder="RD"
-                      value={vt.rd}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          mplsVpn: {
-                            ...node.mplsVpn!,
-                            vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
-                              x.id === vt.id ? { ...x, rd: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Input
-                      size="small"
-                      className="col-span-2"
-                      placeholder="Imp RT"
-                      value={vt.importRt}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          mplsVpn: {
-                            ...node.mplsVpn!,
-                            vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
-                              x.id === vt.id ? { ...x, importRt: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Input
-                      size="small"
-                      className="col-span-3"
-                      placeholder="Exp RT"
-                      value={vt.exportRt}
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          mplsVpn: {
-                            ...node.mplsVpn!,
-                            vrfTargets: node.mplsVpn!.vrfTargets.map((x) =>
-                              x.id === vt.id ? { ...x, exportRt: e.target.value } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      className="col-span-1"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          mplsVpn: {
-                            ...node.mplsVpn!,
-                            vrfTargets: node.mplsVpn!.vrfTargets.filter((x) => x.id !== vt.id),
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
+              )}
+            </Card>
           )}
 
           {node.vendor === 'forcepoint-ngfw' && (
@@ -4093,9 +4138,9 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                                 rules: node.sdwanSla!.rules.map((r) =>
                                   r.id === rule.id
                                     ? {
-                                        ...r,
-                                        preferredMembers: vals.map((s) => s.trim()).filter(Boolean),
-                                      }
+                                      ...r,
+                                      preferredMembers: vals.map((s) => s.trim()).filter(Boolean),
+                                    }
                                     : r
                                 ),
                               },
@@ -4210,436 +4255,440 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             );
             const showAdvProtoBody = hasAdvProtoActive || advProtoExpanded;
             return (
-          <Card
-            size="small"
-            title={
-              <span className="text-teal-300">
-                {[
-                  caps.mpls ? 'MPLS / SR' : null,
-                  caps.switching ? 'Switching' : null,
-                  caps.multicast ? 'Multicast' : null,
-                ]
-                  .filter(Boolean)
-                  .join(' / ')}
-              </span>
-            }
-            extra={
-              <Switch
+              <Card
                 size="small"
-                checked={showAdvProtoBody}
-                onChange={(checked) => {
-                  setAdvProtoExpanded(checked);
-                  if (!checked) {
-                    updateNode(node.id, {
-                      mpls: node.mpls ? { ...node.mpls, ldpEnabled: false, segmentRouting: node.mpls.segmentRouting ? { ...node.mpls.segmentRouting, enabled: false } : undefined } : undefined,
-                      switching: node.switching ? { ...node.switching, stpEnabled: false, lldpEnabled: false } : undefined,
-                      multicast: node.multicast ? { ...node.multicast, pimEnabled: false } : undefined,
-                    });
-                  }
-                }}
-              />
-            }
-          >
-            {showAdvProtoBody && (
-            <div className="space-y-2 text-[11px]">
-              {(caps.mpls || node.mpls?.ldpEnabled || node.mpls?.segmentRouting?.enabled) && (
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex cursor-pointer items-center gap-1.5">
+                title={
+                  <span className="text-teal-300">
+                    {[
+                      caps.mpls ? 'MPLS / SR' : null,
+                      caps.switching ? 'Switching' : null,
+                      caps.multicast ? 'Multicast' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' / ')}
+                  </span>
+                }
+                extra={
                   <Switch
                     size="small"
-                    checked={Boolean(node.mpls?.ldpEnabled)}
-                    onChange={(checked) =>
-                      updateNode(node.id, { mpls: { ...node.mpls, ldpEnabled: checked } })
-                    }
-                  />
-                  <span>MPLS LDP</span>
-                </label>
-                <label className="flex cursor-pointer items-center gap-1.5">
-                  <Switch
-                    size="small"
-                    checked={Boolean(node.mpls?.segmentRouting?.enabled)}
-                    onChange={(checked) =>
-                      updateNode(node.id, {
-                        mpls: {
-                          ...node.mpls,
-                          segmentRouting: { ...node.mpls?.segmentRouting, enabled: checked },
-                        },
-                      })
-                    }
-                  />
-                  <span>SR-MPLS</span>
-                </label>
-                {node.mpls?.segmentRouting?.enabled && (
-                  <InputNumber
-                    size="small"
-                    className="!w-24"
-                    placeholder="Prefix-SID"
-                    min={1}
-                    value={node.mpls.segmentRouting.prefixSid ?? null}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        mpls: {
-                          ...node.mpls,
-                          segmentRouting: {
-                            ...node.mpls!.segmentRouting!,
-                            prefixSid: val ?? undefined,
-                          },
-                        },
-                      })
-                    }
-                  />
-                )}
-              </div>
-              )}
-              {(caps.switching || node.switching?.stpEnabled || node.switching?.lldpEnabled) && (
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex cursor-pointer items-center gap-1.5">
-                  <Switch
-                    size="small"
-                    checked={Boolean(node.switching?.stpEnabled)}
-                    onChange={(checked) =>
-                      updateNode(node.id, {
-                        switching: { ...node.switching, stpEnabled: checked, stpMode: node.switching?.stpMode ?? 'rstp' },
-                      })
-                    }
-                  />
-                  <span>RSTP</span>
-                </label>
-                {node.switching?.stpEnabled && (
-                  <InputNumber
-                    size="small"
-                    className="!w-24"
-                    placeholder="Prio (32768)"
-                    min={0}
-                    max={61440}
-                    step={4096}
-                    value={node.switching.stpPriority ?? null}
-                    onChange={(val) =>
-                      updateNode(node.id, {
-                        switching: { ...node.switching, stpPriority: val ?? undefined },
-                      })
-                    }
-                  />
-                )}
-                <label className="flex cursor-pointer items-center gap-1.5">
-                  <Switch
-                    size="small"
-                    checked={Boolean(node.switching?.lldpEnabled)}
-                    onChange={(checked) =>
-                      updateNode(node.id, { switching: { ...node.switching, lldpEnabled: checked } })
-                    }
-                  />
-                  <span>LLDP</span>
-                </label>
-              </div>
-              )}
-              {(caps.multicast || node.multicast?.pimEnabled) && (
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex cursor-pointer items-center gap-1.5">
-                  <Switch
-                    size="small"
-                    checked={Boolean(node.multicast?.pimEnabled)}
-                    onChange={(checked) =>
-                      updateNode(node.id, { multicast: { ...node.multicast, pimEnabled: checked } })
-                    }
-                  />
-                  <span>PIM-SM</span>
-                </label>
-                {node.multicast?.pimEnabled && (
-                  <Input
-                    size="small"
-                    className="!w-32"
-                    placeholder="RP IP (e.g. 10.0.0.1)"
-                    value={node.multicast.rpAddress ?? ''}
-                    style={{ fontFamily: 'monospace' }}
-                    onChange={(e) =>
-                      updateNode(node.id, {
-                        multicast: { ...node.multicast, rpAddress: e.target.value || undefined },
-                      })
-                    }
-                  />
-                )}
-              </div>
-              )}
-              <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2">
-                <Select
-                  size="small"
-                  className="!w-32"
-                  allowClear
-                  placeholder="PTP Mode"
-                  value={node.timing?.ptpMode}
-                  onChange={(val) =>
-                    updateNode(node.id, { timing: { ...node.timing, ptpMode: val } })
-                  }
-                  options={[
-                    { value: 'grandmaster', label: 'PTP GM' },
-                    { value: 'boundary', label: 'PTP Boundary' },
-                    { value: 'transparent', label: 'PTP Transp' },
-                  ]}
-                />
-                <Input
-                  size="small"
-                  className="!w-28"
-                  placeholder="NTP Server"
-                  value={node.timing?.ntpServer ?? ''}
-                  style={{ fontFamily: 'monospace' }}
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      timing: { ...node.timing, ntpServer: e.target.value || undefined },
-                    })
-                  }
-                />
-                <Input
-                  size="small"
-                  className="!w-28"
-                  placeholder="BMP Server"
-                  value={node.telemetry?.bmpServerIp ?? ''}
-                  style={{ fontFamily: 'monospace' }}
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      telemetry: { ...node.telemetry, bmpServerIp: e.target.value || undefined },
-                    })
-                  }
-                />
-                <Input
-                  size="small"
-                  className="!w-28"
-                  placeholder="IPFIX Collector"
-                  value={node.telemetry?.ipfixCollectorIp ?? ''}
-                  style={{ fontFamily: 'monospace' }}
-                  onChange={(e) =>
-                    updateNode(node.id, {
-                      telemetry: { ...node.telemetry, ipfixCollectorIp: e.target.value || undefined },
-                    })
-                  }
-                />
-              </div>
-              <div className="space-y-1.5 border-t border-slate-800 pt-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">BGP FlowSpec ({node.bgp.flowspecRules?.length ?? 0}) &amp; NAT64 ({node.nat64Rules?.length ?? 0})</span>
-                  <Space size="small">
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
+                    checked={showAdvProtoBody}
+                    onChange={(checked) => {
+                      setAdvProtoExpanded(checked);
+                      if (!checked) {
                         updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: [
-                              ...(node.bgp.flowspecRules ?? []),
-                              { id: `fs-${Date.now()}`, dstCidr: '198.51.100.0/24', protocol: 'tcp', dstPort: 23, action: 'drop' },
-                            ],
-                          },
-                        })
+                          mpls: node.mpls ? { ...node.mpls, ldpEnabled: false, segmentRouting: node.mpls.segmentRouting ? { ...node.mpls.segmentRouting, enabled: false } : undefined } : undefined,
+                          switching: node.switching ? { ...node.switching, stpEnabled: false, lldpEnabled: false } : undefined,
+                          multicast: node.multicast ? { ...node.multicast, pimEnabled: false } : undefined,
+                          timing: undefined,
+                          telemetry: undefined,
+                          nat64Rules: undefined,
+                          bgp: node.bgp.flowspecRules?.length ? { ...node.bgp, flowspecRules: undefined } : node.bgp,
+                        });
                       }
-                    >
-                      FlowSpec
-                    </Button>
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          nat64Rules: [
-                            ...(node.nat64Rules ?? []),
-                            { id: `n64-${Date.now()}`, prefix6: '64:ff9b::/96', pool4Cidr: '10.0.0.0/24' },
-                          ],
-                        })
-                      }
-                    >
-                      NAT64
-                    </Button>
-                  </Space>
-                </div>
-                {(node.bgp.flowspecRules ?? []).map((fs) => (
-                  <div key={fs.id} className="flex flex-wrap items-center gap-1">
-                    <Input
-                      size="small"
-                      className="!w-28"
-                      value={fs.srcCidr ?? ''}
-                      placeholder="Src CIDR"
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                              x.id === fs.id ? { ...x, srcCidr: e.target.value || undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Input
-                      size="small"
-                      className="!w-28"
-                      value={fs.dstCidr ?? ''}
-                      placeholder="Dst CIDR"
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                              x.id === fs.id ? { ...x, dstCidr: e.target.value || undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Select
-                      size="small"
-                      className="!w-16"
-                      value={fs.protocol ?? 'any'}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                              x.id === fs.id ? { ...x, protocol: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={[
-                        { value: 'any', label: 'any' },
-                        { value: 'tcp', label: 'tcp' },
-                        { value: 'udp', label: 'udp' },
-                        { value: 'icmp', label: 'icmp' },
-                      ]}
-                    />
-                    <InputNumber
-                      size="small"
-                      className="!w-16"
-                      value={fs.dstPort ?? null}
-                      placeholder="Port"
-                      onChange={(v) =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                              x.id === fs.id ? { ...x, dstPort: v ?? undefined } : x
-                            ),
-                          },
-                        })
-                      }
-                    />
-                    <Select
-                      size="small"
-                      className="!w-24"
-                      value={fs.action}
-                      onChange={(val) =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                              x.id === fs.id ? { ...x, action: val } : x
-                            ),
-                          },
-                        })
-                      }
-                      options={[
-                        { value: 'drop', label: 'Drop' },
-                        { value: 'rate-limit', label: 'Rate-Lim' },
-                        { value: 'redirect', label: 'Redirect' },
-                      ]}
-                    />
-                    {fs.action === 'rate-limit' && (
-                      <InputNumber
-                        size="small"
-                        className="!w-20"
-                        min={1}
-                        placeholder="Mbps"
-                        value={fs.rateMbps ?? null}
-                        onChange={(v) =>
-                          updateNode(node.id, {
-                            bgp: {
-                              ...node.bgp,
-                              flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                                x.id === fs.id ? { ...x, rateMbps: v ?? undefined } : x
-                              ),
-                            },
-                          })
-                        }
-                      />
+                    }}
+                  />
+                }
+              >
+                {showAdvProtoBody && (
+                  <div className="space-y-2 text-[11px]">
+                    {(caps.mpls || node.mpls?.ldpEnabled || node.mpls?.segmentRouting?.enabled) && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="flex cursor-pointer items-center gap-1.5">
+                          <Switch
+                            size="small"
+                            checked={Boolean(node.mpls?.ldpEnabled)}
+                            onChange={(checked) =>
+                              updateNode(node.id, { mpls: { ...node.mpls, ldpEnabled: checked } })
+                            }
+                          />
+                          <span>MPLS LDP</span>
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-1.5">
+                          <Switch
+                            size="small"
+                            checked={Boolean(node.mpls?.segmentRouting?.enabled)}
+                            onChange={(checked) =>
+                              updateNode(node.id, {
+                                mpls: {
+                                  ...node.mpls,
+                                  segmentRouting: { ...node.mpls?.segmentRouting, enabled: checked },
+                                },
+                              })
+                            }
+                          />
+                          <span>SR-MPLS</span>
+                        </label>
+                        {node.mpls?.segmentRouting?.enabled && (
+                          <InputNumber
+                            size="small"
+                            className="!w-24"
+                            placeholder="Prefix-SID"
+                            min={1}
+                            value={node.mpls.segmentRouting.prefixSid ?? null}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                mpls: {
+                                  ...node.mpls,
+                                  segmentRouting: {
+                                    ...node.mpls!.segmentRouting!,
+                                    prefixSid: val ?? undefined,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        )}
+                      </div>
                     )}
-                    {fs.action === 'redirect' && (
+                    {(caps.switching || node.switching?.stpEnabled || node.switching?.lldpEnabled) && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="flex cursor-pointer items-center gap-1.5">
+                          <Switch
+                            size="small"
+                            checked={Boolean(node.switching?.stpEnabled)}
+                            onChange={(checked) =>
+                              updateNode(node.id, {
+                                switching: { ...node.switching, stpEnabled: checked, stpMode: node.switching?.stpMode ?? 'rstp' },
+                              })
+                            }
+                          />
+                          <span>RSTP</span>
+                        </label>
+                        {node.switching?.stpEnabled && (
+                          <InputNumber
+                            size="small"
+                            className="!w-24"
+                            placeholder="Prio (32768)"
+                            min={0}
+                            max={61440}
+                            step={4096}
+                            value={node.switching.stpPriority ?? null}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                switching: { ...node.switching, stpPriority: val ?? undefined },
+                              })
+                            }
+                          />
+                        )}
+                        <label className="flex cursor-pointer items-center gap-1.5">
+                          <Switch
+                            size="small"
+                            checked={Boolean(node.switching?.lldpEnabled)}
+                            onChange={(checked) =>
+                              updateNode(node.id, { switching: { ...node.switching, lldpEnabled: checked } })
+                            }
+                          />
+                          <span>LLDP</span>
+                        </label>
+                      </div>
+                    )}
+                    {(caps.multicast || node.multicast?.pimEnabled) && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="flex cursor-pointer items-center gap-1.5">
+                          <Switch
+                            size="small"
+                            checked={Boolean(node.multicast?.pimEnabled)}
+                            onChange={(checked) =>
+                              updateNode(node.id, { multicast: { ...node.multicast, pimEnabled: checked } })
+                            }
+                          />
+                          <span>PIM-SM</span>
+                        </label>
+                        {node.multicast?.pimEnabled && (
+                          <Input
+                            size="small"
+                            className="!w-32"
+                            placeholder="RP IP (e.g. 10.0.0.1)"
+                            value={node.multicast.rpAddress ?? ''}
+                            style={{ fontFamily: 'monospace' }}
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                multicast: { ...node.multicast, rpAddress: e.target.value || undefined },
+                              })
+                            }
+                          />
+                        )}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2">
+                      <Select
+                        size="small"
+                        className="!w-32"
+                        allowClear
+                        placeholder="PTP Mode"
+                        value={node.timing?.ptpMode}
+                        onChange={(val) =>
+                          updateNode(node.id, { timing: { ...node.timing, ptpMode: val } })
+                        }
+                        options={[
+                          { value: 'grandmaster', label: 'PTP GM' },
+                          { value: 'boundary', label: 'PTP Boundary' },
+                          { value: 'transparent', label: 'PTP Transp' },
+                        ]}
+                      />
                       <Input
                         size="small"
                         className="!w-28"
-                        placeholder="Redirect NH"
-                        value={fs.redirectNextHop ?? ''}
+                        placeholder="NTP Server"
+                        value={node.timing?.ntpServer ?? ''}
+                        style={{ fontFamily: 'monospace' }}
                         onChange={(e) =>
                           updateNode(node.id, {
-                            bgp: {
-                              ...node.bgp,
-                              flowspecRules: node.bgp.flowspecRules?.map((x) =>
-                                x.id === fs.id ? { ...x, redirectNextHop: e.target.value || undefined } : x
-                              ),
-                            },
+                            timing: { ...node.timing, ntpServer: e.target.value || undefined },
                           })
                         }
                       />
-                    )}
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          bgp: {
-                            ...node.bgp,
-                            flowspecRules: node.bgp.flowspecRules?.filter((x) => x.id !== fs.id),
-                          },
-                        })
-                      }
-                    />
+                      <Input
+                        size="small"
+                        className="!w-28"
+                        placeholder="BMP Server"
+                        value={node.telemetry?.bmpServerIp ?? ''}
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            telemetry: { ...node.telemetry, bmpServerIp: e.target.value || undefined },
+                          })
+                        }
+                      />
+                      <Input
+                        size="small"
+                        className="!w-28"
+                        placeholder="IPFIX Collector"
+                        value={node.telemetry?.ipfixCollectorIp ?? ''}
+                        style={{ fontFamily: 'monospace' }}
+                        onChange={(e) =>
+                          updateNode(node.id, {
+                            telemetry: { ...node.telemetry, ipfixCollectorIp: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1.5 border-t border-slate-800 pt-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">BGP FlowSpec ({node.bgp.flowspecRules?.length ?? 0}) &amp; NAT64 ({node.nat64Rules?.length ?? 0})</span>
+                        <Space size="small">
+                          <Button
+                            size="small"
+                            icon={<PlusOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: [
+                                    ...(node.bgp.flowspecRules ?? []),
+                                    { id: `fs-${Date.now()}`, dstCidr: '198.51.100.0/24', protocol: 'tcp', dstPort: 23, action: 'drop' },
+                                  ],
+                                },
+                              })
+                            }
+                          >
+                            FlowSpec
+                          </Button>
+                          <Button
+                            size="small"
+                            icon={<PlusOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                nat64Rules: [
+                                  ...(node.nat64Rules ?? []),
+                                  { id: `n64-${Date.now()}`, prefix6: '64:ff9b::/96', pool4Cidr: '10.0.0.0/24' },
+                                ],
+                              })
+                            }
+                          >
+                            NAT64
+                          </Button>
+                        </Space>
+                      </div>
+                      {(node.bgp.flowspecRules ?? []).map((fs) => (
+                        <div key={fs.id} className="flex flex-wrap items-center gap-1">
+                          <Input
+                            size="small"
+                            className="!w-28"
+                            value={fs.srcCidr ?? ''}
+                            placeholder="Src CIDR"
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                    x.id === fs.id ? { ...x, srcCidr: e.target.value || undefined } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Input
+                            size="small"
+                            className="!w-28"
+                            value={fs.dstCidr ?? ''}
+                            placeholder="Dst CIDR"
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                    x.id === fs.id ? { ...x, dstCidr: e.target.value || undefined } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Select
+                            size="small"
+                            className="!w-16"
+                            value={fs.protocol ?? 'any'}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                    x.id === fs.id ? { ...x, protocol: val } : x
+                                  ),
+                                },
+                              })
+                            }
+                            options={[
+                              { value: 'any', label: 'any' },
+                              { value: 'tcp', label: 'tcp' },
+                              { value: 'udp', label: 'udp' },
+                              { value: 'icmp', label: 'icmp' },
+                            ]}
+                          />
+                          <InputNumber
+                            size="small"
+                            className="!w-16"
+                            value={fs.dstPort ?? null}
+                            placeholder="Port"
+                            onChange={(v) =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                    x.id === fs.id ? { ...x, dstPort: v ?? undefined } : x
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <Select
+                            size="small"
+                            className="!w-24"
+                            value={fs.action}
+                            onChange={(val) =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                    x.id === fs.id ? { ...x, action: val } : x
+                                  ),
+                                },
+                              })
+                            }
+                            options={[
+                              { value: 'drop', label: 'Drop' },
+                              { value: 'rate-limit', label: 'Rate-Lim' },
+                              { value: 'redirect', label: 'Redirect' },
+                            ]}
+                          />
+                          {fs.action === 'rate-limit' && (
+                            <InputNumber
+                              size="small"
+                              className="!w-20"
+                              min={1}
+                              placeholder="Mbps"
+                              value={fs.rateMbps ?? null}
+                              onChange={(v) =>
+                                updateNode(node.id, {
+                                  bgp: {
+                                    ...node.bgp,
+                                    flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                      x.id === fs.id ? { ...x, rateMbps: v ?? undefined } : x
+                                    ),
+                                  },
+                                })
+                              }
+                            />
+                          )}
+                          {fs.action === 'redirect' && (
+                            <Input
+                              size="small"
+                              className="!w-28"
+                              placeholder="Redirect NH"
+                              value={fs.redirectNextHop ?? ''}
+                              onChange={(e) =>
+                                updateNode(node.id, {
+                                  bgp: {
+                                    ...node.bgp,
+                                    flowspecRules: node.bgp.flowspecRules?.map((x) =>
+                                      x.id === fs.id ? { ...x, redirectNextHop: e.target.value || undefined } : x
+                                    ),
+                                  },
+                                })
+                              }
+                            />
+                          )}
+                          <Button
+                            size="small"
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                bgp: {
+                                  ...node.bgp,
+                                  flowspecRules: node.bgp.flowspecRules?.filter((x) => x.id !== fs.id),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                      {(node.nat64Rules ?? []).map((n64) => (
+                        <div key={n64.id} className="flex items-center gap-1">
+                          <Input
+                            size="small"
+                            className="!w-32"
+                            value={n64.prefix6}
+                            placeholder="NAT64 Prefix6"
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                nat64Rules: node.nat64Rules?.map((x) =>
+                                  x.id === n64.id ? { ...x, prefix6: e.target.value } : x
+                                ),
+                              })
+                            }
+                          />
+                          <Input
+                            size="small"
+                            className="!w-32"
+                            value={n64.pool4Cidr}
+                            placeholder="IPv4 Pool"
+                            onChange={(e) =>
+                              updateNode(node.id, {
+                                nat64Rules: node.nat64Rules?.map((x) =>
+                                  x.id === n64.id ? { ...x, pool4Cidr: e.target.value } : x
+                                ),
+                              })
+                            }
+                          />
+                          <Button
+                            size="small"
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              updateNode(node.id, {
+                                nat64Rules: node.nat64Rules?.filter((x) => x.id !== n64.id),
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-                {(node.nat64Rules ?? []).map((n64) => (
-                  <div key={n64.id} className="flex items-center gap-1">
-                    <Input
-                      size="small"
-                      className="!w-32"
-                      value={n64.prefix6}
-                      placeholder="NAT64 Prefix6"
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          nat64Rules: node.nat64Rules?.map((x) =>
-                            x.id === n64.id ? { ...x, prefix6: e.target.value } : x
-                          ),
-                        })
-                      }
-                    />
-                    <Input
-                      size="small"
-                      className="!w-32"
-                      value={n64.pool4Cidr}
-                      placeholder="IPv4 Pool"
-                      onChange={(e) =>
-                        updateNode(node.id, {
-                          nat64Rules: node.nat64Rules?.map((x) =>
-                            x.id === n64.id ? { ...x, pool4Cidr: e.target.value } : x
-                          ),
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          nat64Rules: node.nat64Rules?.filter((x) => x.id !== n64.id),
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-            )}
-          </Card>
+                )}
+              </Card>
             );
           })()}
 
@@ -5757,7 +5806,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       children: (
         <div className="space-y-3">
           <Card size="small" title={caps.vrfLabel}>
-          {node.vendor === 'forcepoint-ngfw' && (
+            {node.vendor === 'forcepoint-ngfw' && (
               <Alert
                 type="info"
                 showIcon
@@ -5775,19 +5824,73 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     style={
                       vColor
                         ? {
-                            backgroundColor: `${vColor}22`,
-                            borderColor: `${vColor}77`,
-                            color: vColor,
-                          }
+                          backgroundColor: `${vColor}22`,
+                          borderColor: `${vColor}77`,
+                          color: vColor,
+                        }
                         : undefined
                     }
                     closable={v !== 'default'}
-                    onClose={() =>
+                    onClose={() => {
+                      const nextVrfRouterIds = node.vrfRouterIds ? { ...node.vrfRouterIds } : undefined;
+                      if (nextVrfRouterIds) delete nextVrfRouterIds[v];
                       updateNode(node.id, {
                         vrfs: vrfs.filter((x) => x !== v),
                         vrfLeaks: vrfLeaks.filter((l) => l.fromVrf !== v && l.toVrf !== v),
-                      })
-                    }
+                        interfaces: node.interfaces.map((i) => (i.vrf === v ? { ...i, vrf: 'default' } : i)),
+                        staticRoutes: node.staticRoutes.map((sr) => (sr.vrf === v ? { ...sr, vrf: 'default' } : sr)),
+                        redistributions: node.redistributions.map((r) => (r.vrf === v ? { ...r, vrf: 'default' } : r)),
+                        ospf: {
+                          ...node.ospf,
+                          networks: node.ospf.networks.map((n) => (n.vrf === v ? { ...n, vrf: 'default' } : n)),
+                          shamLinks: node.ospf.shamLinks?.filter((sl) => sl.vrf !== v),
+                        },
+                        bgp: {
+                          ...node.bgp,
+                          peers: node.bgp.peers.map((p) => (p.vrf === v ? { ...p, vrf: 'default' } : p)),
+                          networks: node.bgp.networks.map((n) => (n.vrf === v ? { ...n, vrf: 'default' } : n)),
+                          aggregates: node.bgp.aggregates?.map((a) => (a.vrf === v ? { ...a, vrf: 'default' } : a)),
+                        },
+                        lisp: node.lisp
+                          ? {
+                            ...node.lisp,
+                            eidPrefixes: node.lisp.eidPrefixes?.map((e) =>
+                              e.vrf === v ? { ...e, vrf: 'default' } : e
+                            ),
+                          }
+                          : undefined,
+                        eigrp: node.eigrp
+                          ? {
+                            ...node.eigrp,
+                            networks: node.eigrp.networks.map((n) => (n.vrf === v ? { ...n, vrf: 'default' } : n)),
+                          }
+                          : undefined,
+                        isis: node.isis
+                          ? {
+                            ...node.isis,
+                            networks: node.isis.networks.map((n) => (n.vrf === v ? { ...n, vrf: 'default' } : n)),
+                          }
+                          : undefined,
+                        rip: node.rip
+                          ? {
+                            ...node.rip,
+                            networks: node.rip.networks.map((n) => (n.vrf === v ? { ...n, vrf: 'default' } : n)),
+                          }
+                          : undefined,
+                        tracks: node.tracks?.map((tr) => (tr.vrf === v ? { ...tr, vrf: 'default' } : tr)),
+                        evpn: node.evpn && node.evpn.vrf === v ? { ...node.evpn, vrf: 'default' } : node.evpn,
+                        mplsVpn: node.mplsVpn
+                          ? {
+                            ...node.mplsVpn,
+                            vrfTargets: node.mplsVpn.vrfTargets.filter((vt) => vt.vrf !== v),
+                          }
+                          : undefined,
+                        vrfRouterIds:
+                          nextVrfRouterIds && Object.keys(nextVrfRouterIds).length > 0
+                            ? nextVrfRouterIds
+                            : undefined,
+                      });
+                    }}
                   >
                     <span className="inline-flex items-center gap-1.5">
                       <input
@@ -6035,17 +6138,17 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             prefixLists: prefixLists.map((x) =>
                               x.id === pl.id
                                 ? {
-                                    ...x,
-                                    entries: [
-                                      ...x.entries,
-                                      {
-                                        id: `ple-${Date.now()}`,
-                                        seq: (x.entries.length + 1) * 10,
-                                        action: 'permit',
-                                        prefix: '10.0.0.0/8',
-                                      },
-                                    ],
-                                  }
+                                  ...x,
+                                  entries: [
+                                    ...x.entries,
+                                    {
+                                      id: `ple-${Date.now()}`,
+                                      seq: (x.entries.length + 1) * 10,
+                                      action: 'permit',
+                                      prefix: '10.0.0.0/8',
+                                    },
+                                  ],
+                                }
                                 : x
                             ),
                           })
@@ -6061,6 +6164,17 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         onClick={() =>
                           updateNode(node.id, {
                             prefixLists: prefixLists.filter((x) => x.id !== pl.id),
+                            routeMaps: routeMaps.map((rm) => ({
+                              ...rm,
+                              entries: rm.entries.map((entry) =>
+                                entry.matchPrefixListId === pl.id
+                                  ? { ...entry, matchPrefixListId: undefined }
+                                  : entry
+                              ),
+                            })),
+                            vrfLeaks: node.vrfLeaks.map((vl) =>
+                              vl.matchPrefixListId === pl.id ? { ...vl, matchPrefixListId: undefined } : vl
+                            ),
                           })
                         }
                       />
@@ -6077,11 +6191,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             prefixLists: prefixLists.map((x) =>
                               x.id === pl.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, seq: val ?? 10 } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, seq: val ?? 10 } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6096,11 +6210,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             prefixLists: prefixLists.map((x) =>
                               x.id === pl.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, action: val } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, action: val } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6120,11 +6234,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             prefixLists: prefixLists.map((x) =>
                               x.id === pl.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, prefix: ev.target.value } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, prefix: ev.target.value } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6140,11 +6254,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             prefixLists: prefixLists.map((x) =>
                               x.id === pl.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, le: val ?? undefined } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, le: val ?? undefined } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6220,17 +6334,55 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                         })
                       }
                     />
-                    <Button
-                      size="small"
-                      danger
-                      type="text"
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        updateNode(node.id, {
-                          routeMaps: routeMaps.filter((x) => x.id !== rm.id),
-                        })
-                      }
-                    />
+                    <Space size="small">
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          updateNode(node.id, {
+                            routeMaps: routeMaps.map((x) =>
+                              x.id === rm.id
+                                ? {
+                                  ...x,
+                                  entries: [
+                                    ...x.entries,
+                                    {
+                                      id: `rme-${Date.now()}`,
+                                      seq: (Math.max(0, ...x.entries.map((e) => e.seq)) || 0) + 10,
+                                      action: 'permit',
+                                      set: {},
+                                    },
+                                  ],
+                                }
+                                : x
+                            ),
+                          })
+                        }
+                      >
+                        + Entry
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          updateNode(node.id, {
+                            routeMaps: routeMaps.filter((x) => x.id !== rm.id),
+                            bgp: {
+                              ...node.bgp,
+                              peers: node.bgp.peers.map((p) => ({
+                                ...p,
+                                routeMapInId: p.routeMapInId === rm.id ? undefined : p.routeMapInId,
+                                routeMapOutId: p.routeMapOutId === rm.id ? undefined : p.routeMapOutId,
+                              })),
+                            },
+                            redistributions: node.redistributions.map((rd) =>
+                              rd.routeMapId === rm.id ? { ...rd, routeMapId: undefined } : rd
+                            ),
+                          })
+                        }
+                      />
+                    </Space>
                   </div>
                   {node.bgp.enabled && node.bgp.peers.length > 0 && (
                     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 text-[10px] text-slate-300">
@@ -6295,11 +6447,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, seq: val ?? 10 } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, seq: val ?? 10 } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6314,11 +6466,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, action: val } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, action: val } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6339,11 +6491,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, matchPrefixListId: val } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, matchPrefixListId: val } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6360,11 +6512,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, matchCommunity: ev.target.value || undefined } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, matchCommunity: ev.target.value || undefined } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6380,11 +6532,11 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id ? { ...en, matchAsPathRegex: ev.target.value || undefined } : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id ? { ...en, matchAsPathRegex: ev.target.value || undefined } : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6400,13 +6552,13 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id
-                                        ? { ...en, set: { ...en.set, setCommunity: ev.target.value || undefined } }
-                                        : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id
+                                      ? { ...en, set: { ...en.set, setCommunity: ev.target.value || undefined } }
+                                      : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6422,16 +6574,16 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                             routeMaps: routeMaps.map((x) =>
                               x.id === rm.id
                                 ? {
-                                    ...x,
-                                    entries: x.entries.map((en) =>
-                                      en.id === e.id
-                                        ? {
-                                            ...en,
-                                            set: { ...en.set, setLocalPref: val ?? undefined },
-                                          }
-                                        : en
-                                    ),
-                                  }
+                                  ...x,
+                                  entries: x.entries.map((en) =>
+                                    en.id === e.id
+                                      ? {
+                                        ...en,
+                                        set: { ...en.set, setLocalPref: val ?? undefined },
+                                      }
+                                      : en
+                                  ),
+                                }
                                 : x
                             ),
                           })
@@ -6831,65 +6983,65 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               ? newLinkDstIf
               : targetNode.interfaces[0]?.id;
             return (
-            <Card size="small" title="Connect Interface Link">
-              <div className="grid grid-cols-3 gap-1.5">
-                <Select
-                  size="small"
-                  value={validSrcIf}
-                  onChange={setNewLinkSrcIf}
-                  options={node.interfaces.map((i) => ({ value: i.id, label: i.name }))}
-                />
-                <Select
-                  size="small"
-                  value={targetNode.id}
-                  onChange={(val) => {
-                    setNewLinkTargetId(val);
-                    setNewLinkDstIf('');
-                  }}
-                  options={otherNodes.map((n) => ({ value: n.id, label: n.hostname }))}
-                />
-                <Select
-                  size="small"
-                  value={validDstIf}
-                  onChange={setNewLinkDstIf}
-                  options={targetNode.interfaces.map((i) => ({ value: i.id, label: i.name }))}
-                />
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <Select
-                  size="small"
-                  className="flex-1"
-                  value={newLinkType}
-                  onChange={(v) => setNewLinkType(v as 'ethernet' | 'ipsec')}
-                  options={[
-                    { value: 'ethernet', label: 'Ethernet / L3 Link' },
-                    { value: 'ipsec', label: 'IPsec Tunnel (IKEv2)' },
-                  ]}
-                />
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => {
-                    if (!validSrcIf || !validDstIf) return;
-                    addLink({
-                      id: `link-${Date.now()}`,
-                      sourceNodeId: node.id,
-                      sourceInterfaceId: validSrcIf,
-                      targetNodeId: targetNode.id,
-                      targetInterfaceId: validDstIf,
-                      linkType: newLinkType,
-                      ipsecConfig:
-                        newLinkType === 'ipsec'
-                          ? { ikeVersion: 'IKEv2', cryptoProfile: 'AES256-GCM-SHA256' }
-                          : undefined,
-                    });
-                  }}
-                >
-                  Create Link
-                </Button>
-              </div>
-            </Card>
+              <Card size="small" title="Connect Interface Link">
+                <div className="grid grid-cols-3 gap-1.5">
+                  <Select
+                    size="small"
+                    value={validSrcIf}
+                    onChange={setNewLinkSrcIf}
+                    options={node.interfaces.map((i) => ({ value: i.id, label: i.name }))}
+                  />
+                  <Select
+                    size="small"
+                    value={targetNode.id}
+                    onChange={(val) => {
+                      setNewLinkTargetId(val);
+                      setNewLinkDstIf('');
+                    }}
+                    options={otherNodes.map((n) => ({ value: n.id, label: n.hostname }))}
+                  />
+                  <Select
+                    size="small"
+                    value={validDstIf}
+                    onChange={setNewLinkDstIf}
+                    options={targetNode.interfaces.map((i) => ({ value: i.id, label: i.name }))}
+                  />
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <Select
+                    size="small"
+                    className="flex-1"
+                    value={newLinkType}
+                    onChange={(v) => setNewLinkType(v as 'ethernet' | 'ipsec')}
+                    options={[
+                      { value: 'ethernet', label: 'Ethernet / L3 Link' },
+                      { value: 'ipsec', label: 'IPsec Tunnel (IKEv2)' },
+                    ]}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => {
+                      if (!validSrcIf || !validDstIf) return;
+                      addLink({
+                        id: `link-${Date.now()}`,
+                        sourceNodeId: node.id,
+                        sourceInterfaceId: validSrcIf,
+                        targetNodeId: targetNode.id,
+                        targetInterfaceId: validDstIf,
+                        linkType: newLinkType,
+                        ipsecConfig:
+                          newLinkType === 'ipsec'
+                            ? { ikeVersion: 'IKEv2', cryptoProfile: 'AES256-GCM-SHA256' }
+                            : undefined,
+                      });
+                    }}
+                  >
+                    Create Link
+                  </Button>
+                </div>
+              </Card>
             );
           })()}
         </div>
