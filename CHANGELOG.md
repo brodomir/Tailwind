@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [v0.2.0-beta.8-hotfix.1] - 2026-11-26
+
+### Fixed
+- **Light Mode Path Audit Contrast (`index.css`)**: Added `html.light` overrides for `bg-slate-950/80` (return-path hop pills), `bg-slate-900/70`, and `text-cyan-400`/`text-emerald-400`/`text-rose-400` so return hops and status/VRF badges remain high-contrast in Light Mode.
+- **CI Workflow (`ci-release.yml`)**: Upgraded Docker GitHub Actions (`setup-qemu-action@v4`, `setup-buildx-action@v4`, `login-action@v4`, `metadata-action@v6`, `build-push-action@v7`) to Node.js 24-native versions.
+
+---
+
 ## [v0.2.0-beta.8] - 2026-11-26
 
 ### Fixed
