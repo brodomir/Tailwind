@@ -663,6 +663,7 @@ export interface BgpAttributes {
   communities?: string[];
   largeCommunities?: string[];
   clusterList?: string[];
+  originatorId?: string;
   rpkiState?: 'valid' | 'invalid' | 'not-found';
   atomicAggregate?: boolean;
   aggregator?: string;
@@ -687,6 +688,7 @@ export interface RibEntry {
   ecmp: boolean;
   reason?: string;
   leakedFromVrf?: string;
+  overlayRemoteVrf?: string;
   isisUpDownBit?: boolean;
   tag?: number;
   bgpAttrs?: BgpAttributes;

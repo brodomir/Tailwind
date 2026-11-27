@@ -59,7 +59,7 @@ src/
 
 `tracePacket` walks the converged forwarding tables hop-by-hop:
 
-- **Ingress Checks**: Pre-routing DNAT, NAT64, and RFC 3704 uRPF (strict/loose).
+- **Ingress Checks & Overlay Decap**: Overlay decapsulation on remote tunnel endpoints (restoring inner destination IP and VRF) runs before pre-routing DNAT, NAT64, RFC 3704 uRPF (strict/loose), FlowSpec, ACL, and SNAT so security policies evaluate inner traffic accurately.
 - **Forwarding Lookup**: IPv4/IPv6 LPM via `BinaryRadixTrie` / `BinaryRadixTrie6`, followed by PBR/PBF/FBF, FlowSpec, and SD-WAN SLA steering.
 - **Security & Encapsulation**: Zone-aware ACL evaluation, post-routing SNAT, and overlay encapsulation/decapsulation (MPLS L3VPN, LISP, VXLAN EVPN, OMP, GRE, IPsec, MACsec) with non-default VRF restoration.
 - **MPLS / DIA Cloud Handling**: `mpls-cloud` and `internet-cloud` nodes bypass uRPF/FlowSpec/ACL drops and automatically accept & deliver traffic when no more-specific transit route exists in their RIB.
@@ -81,7 +81,7 @@ The test suites under `src/engine/__tests__/` cover:
 - Multi-vendor control-plane convergence, AD overrides, HA/clustering, and packet traces (`solver.test.ts`, `multinational.test.ts`, `multinationalPaths.test.ts`)
 - Policy engine (`policy.test.ts`), SD-WAN (`sdwan.test.ts`), advanced overlays (`advancedFeatures.test.ts`)
 - Standards, 802.1Q sub-interfaces, LACP/PAgP Port-Channels, MPLS/DIA auto-accept, `cisco-mpls-dmvpn`, and `bgp-ecmp-lab` (`standards.test.ts`)
-- Cross-module bug-hunt regression suite and full 9-preset beta validation (`moduleAudit.test.ts`, `betaValidation.test.ts` — 109 tests total)
+- Cross-module bug-hunt regression suite and full 9-preset beta validation (`moduleAudit.test.ts`, `betaValidation.test.ts` — 121 tests total)
 
 ---
 

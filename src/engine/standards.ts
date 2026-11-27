@@ -203,6 +203,7 @@ export function computeStpAndLldp(
 
     const dist = new Map<string, number>([[rootNode.id, 0]]);
     const rootLinkByNode = new Map<string, { linkId: string; localIfId: string }>();
+    const rootSenderByNode = new Map<string, NodeConfig>();
     const visited = new Set<string>();
     while (visited.size < compNodes.length) {
       let bestNode: NodeConfig | undefined;
@@ -210,7 +211,10 @@ export function computeStpAndLldp(
       for (const n of compNodes) {
         if (visited.has(n.id)) continue;
         const d = dist.get(n.id) ?? Infinity;
-        if (d < bestCost) {
+        if (
+          d < bestCost ||
+          (d === bestCost && d < Infinity && bestNode && compareBridgeIds(n, bestNode) < 0)
+        ) {
           bestCost = d;
           bestNode = n;
         }
@@ -227,9 +231,15 @@ export function computeStpAndLldp(
         if (!nbr || visited.has(nbrId)) continue;
         const nbrIfId = isSrc ? link.targetInterfaceId : link.sourceInterfaceId;
         const newCost = bestCost + getStpPortCost(nbr, nbrIfId);
-        if (newCost < (dist.get(nbrId) ?? Infinity)) {
+        const curDist = dist.get(nbrId) ?? Infinity;
+        const curSender = rootSenderByNode.get(nbrId);
+        if (
+          newCost < curDist ||
+          (newCost === curDist && curSender && compareBridgeIds(bestNode, curSender) < 0)
+        ) {
           dist.set(nbrId, newCost);
           rootLinkByNode.set(nbrId, { linkId: link.id, localIfId: nbrIfId });
+          rootSenderByNode.set(nbrId, bestNode);
         }
       }
     }
@@ -338,7 +348,7 @@ export function computeMplsLfib(
 
     for (const r of rib) {
       if (!r.active || r.protocol === 'local' || r.protocol === 'connected') continue;
-      if (r.af === 6 && !mpls.segmentRouting?.srv6Locator) continue;
+      if (r.af === 6 && !(mpls.segmentRouting?.enabled && mpls.segmentRouting?.srv6Locator)) continue;
       if (r.protocol !== 'ospf' && r.protocol !== 'isis' && r.protocol !== 'eigrp') continue;
 
       const remoteNode = topology.nodes.find((rn) =>
@@ -376,7 +386,7 @@ export function computeMplsLfib(
           protocol: 'sr-mpls',
         });
         nextLabel++;
-      } else if (mpls.segmentRouting?.srv6Locator && r.af === 6) {
+      } else if (mpls.segmentRouting?.enabled && mpls.segmentRouting?.srv6Locator && r.af === 6) {
         entries.push({
           inLabel: `${mpls.segmentRouting.srv6Locator}::${r.prefix}`,
           outLabel: isDirectPhp ? 'POP' : `${mpls.segmentRouting.srv6Locator}::${r.prefix}`,
@@ -402,16 +412,19 @@ export function computeMplsLfib(
       const dstNode = Array.from(nodeMap.values()).find(
         (n) => n.routerId === tun.destination || n.hostname === tun.destination
       );
+      const dstIp = parseCidr(`${tun.destination}/32`)
+        ? tun.destination
+        : (dstNode?.routerId ?? tun.destination);
       const match = rib
         .filter(
-          (r) => r.active && r.af !== 6 && isIpInCidr(tun.destination, `${r.prefix}/${r.prefixLen}`)
+          (r) => r.active && r.af !== 6 && isIpInCidr(dstIp, `${r.prefix}/${r.prefixLen}`)
         )
         .sort((a, b) => b.prefixLen - a.prefixLen)[0];
       entries.push({
         inLabel: nextLabel++,
         outLabel: dstNode ? nextLabel + 50 : 'POP',
-        prefix: `${tun.destination}/32`,
-        nextHop: tun.ero?.[0] ?? match?.nextHop ?? tun.destination,
+        prefix: `${dstIp}/32`,
+        nextHop: tun.ero?.[0] ?? match?.nextHop ?? dstIp,
         egressInterface: match?.egressInterface ?? 'Tunnel0',
         protocol: 'rsvp-te',
       });
@@ -464,7 +477,7 @@ export function computeMulticastMroute(
         }
       }
       entries.push({
-        source: grp.source ?? '*',
+        source: grp.source || '*',
         group: grp.group,
         rpfInterface,
         oifList: Array.from(oifs),
@@ -525,7 +538,7 @@ export function evaluateFlowspec(
 export function evaluateNat64(
   node: NodeConfig,
   dstIp: string
-): { dstIp: string; note: string } | null {
+): { dstIp: string; srcIp?: string; note: string } | null {
   if (detectAddressFamily(dstIp) !== 6) return null;
   for (const rule of node.nat64Rules ?? []) {
     const p6 = parseCidr6(rule.prefix6);
@@ -533,7 +546,13 @@ export function evaluateNat64(
     const addr6 = ip6ToBigInt(dstIp);
     const embeddedV4 = Number(addr6 & 0xffffffffn) >>> 0;
     const v4Str = uint32ToIp(embeddedV4);
-    return { dstIp: v4Str, note: `NAT64 (${dstIp} -> ${v4Str})` };
+    const pool4 = rule.pool4Cidr ? parseCidr(rule.pool4Cidr) : null;
+    const v4Src = pool4?.ip;
+    return {
+      dstIp: v4Str,
+      ...(v4Src ? { srcIp: v4Src } : {}),
+      note: v4Src ? `NAT64 (${dstIp} -> ${v4Str}, src -> ${v4Src})` : `NAT64 (${dstIp} -> ${v4Str})`,
+    };
   }
   return null;
 }

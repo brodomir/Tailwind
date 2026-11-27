@@ -90,7 +90,9 @@ const DeviceNode: React.FC<NodeProps<Node<DeviceNodeData>>> = ({ data }) => {
 
   const cloudFill =
     traceState === 'blocked' || traceState === 'dropped' || traceState === 'loop'
-      ? 'rgba(76, 5, 25, 0.78)'
+      ? themeMode === 'light'
+        ? 'rgba(255, 235, 238, 0.96)'
+        : 'rgba(76, 5, 25, 0.78)'
       : themeMode === 'light'
         ? 'rgba(255, 255, 255, 0.95)'
         : 'rgba(15, 23, 42, 0.92)';

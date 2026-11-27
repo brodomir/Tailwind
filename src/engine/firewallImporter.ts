@@ -64,6 +64,12 @@ function wildcardToPrefixLenLocal(wildcard: string): number {
   return Math.max(0, 32 - hostBits);
 }
 
+function normalizeRuleAf(srcCidr: string, dstCidr: string): { srcCidr: string; dstCidr: string } {
+  if (srcCidr.includes(':') && dstCidr === '0.0.0.0/0') return { srcCidr, dstCidr: '::/0' };
+  if (dstCidr.includes(':') && srcCidr === '0.0.0.0/0') return { srcCidr: '::/0', dstCidr };
+  return { srcCidr, dstCidr };
+}
+
 function resolveAddressToken(token: string, addrBook: Map<string, string>): string {
   const clean = stripQuotes(token).replace(/^\[|\]$/g, '').trim();
   const lower = clean.toLowerCase();
@@ -72,6 +78,8 @@ function resolveAddressToken(token: string, addrBook: Map<string, string>): stri
   if (mapped) return mapped;
   if (/^\d+\.\d+\.\d+\.\d+\/\d+$/.test(clean)) return clean;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(clean)) return `${clean}/32`;
+  if (/^[0-9a-fA-F:]+:[0-9a-fA-F:]*\/\d+$/.test(clean)) return clean;
+  if (/^[0-9a-fA-F:]+:[0-9a-fA-F:]*$/.test(clean)) return `${clean}/128`;
   return '0.0.0.0/0';
 }
 
@@ -178,11 +186,17 @@ export function parsePanOsAclRules(lines: string[]): AclRuleConfig[] {
     }
   }
 
-  return ruleOrder.map((name, idx) => ({
-    id: `acl-pan-${Date.now()}-${idx}`,
-    seq: (idx + 1) * 10,
-    ...ruleMap.get(name)!,
-  }));
+  return ruleOrder.map((name, idx) => {
+    const r = ruleMap.get(name)!;
+    const norm = normalizeRuleAf(r.srcCidr, r.dstCidr);
+    return {
+      id: `acl-pan-${Date.now()}-${idx}`,
+      seq: (idx + 1) * 10,
+      ...r,
+      srcCidr: norm.srcCidr,
+      dstCidr: norm.dstCidr,
+    };
+  });
 }
 
 export function parseFortigateAclRules(lines: string[]): AclRuleConfig[] {
@@ -196,6 +210,7 @@ export function parseFortigateAclRules(lines: string[]): AclRuleConfig[] {
 
   const flushPolicy = () => {
     if (block === 'policy' && curRule) {
+      const norm = normalizeRuleAf(curRule.srcCidr ?? '0.0.0.0/0', curRule.dstCidr ?? '0.0.0.0/0');
       rules.push({
         id: `acl-fgt-${Date.now()}-${rules.length}`,
         seq: (rules.length + 1) * 10,
@@ -203,8 +218,8 @@ export function parseFortigateAclRules(lines: string[]): AclRuleConfig[] {
         action: curRule.action ?? 'deny',
         srcZone: curRule.srcZone,
         dstZone: curRule.dstZone,
-        srcCidr: curRule.srcCidr ?? '0.0.0.0/0',
-        dstCidr: curRule.dstCidr ?? '0.0.0.0/0',
+        srcCidr: norm.srcCidr,
+        dstCidr: norm.dstCidr,
         protocol: curRule.protocol ?? 'any',
         dstPort: curRule.dstPort,
       });
@@ -276,17 +291,34 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
   const rules: AclRuleConfig[] = [];
   let currentAclName: string | null = null;
   let currentAclIsStandard = false;
+  let currentAclIsIpv6 = false;
 
-  const parseEndpoint = (tokens: string[], idx: number): { cidr: string; nextIdx: number } => {
-    const t = (tokens[idx] ?? '').toLowerCase();
-    if (t === 'any' || t === 'any4') return { cidr: '0.0.0.0/0', nextIdx: idx + 1 };
-    if (t === 'host' && tokens[idx + 1]) return { cidr: `${tokens[idx + 1]}/32`, nextIdx: idx + 2 };
+  const parseEndpoint = (
+    tokens: string[],
+    idx: number,
+    defaultIpv6 = false
+  ): { cidr: string; nextIdx: number } => {
+    const rawTok = tokens[idx] ?? '';
+    const t = rawTok.toLowerCase();
+    if (t === 'any6') return { cidr: '::/0', nextIdx: idx + 1 };
+    if (t === 'any' || t === 'any4') {
+      return { cidr: defaultIpv6 && t === 'any' ? '::/0' : '0.0.0.0/0', nextIdx: idx + 1 };
+    }
+    if (t === 'host' && tokens[idx + 1]) {
+      const hostTok = tokens[idx + 1];
+      return {
+        cidr: hostTok.includes(':') ? `${hostTok}/128` : `${hostTok}/32`,
+        nextIdx: idx + 2,
+      };
+    }
     if (/^\d+\.\d+\.\d+\.\d+\/\d+$/.test(t)) return { cidr: t, nextIdx: idx + 1 };
+    if (/^[0-9a-fA-F:]+:[0-9a-fA-F:]*\/\d+$/.test(rawTok)) return { cidr: rawTok, nextIdx: idx + 1 };
+    if (/^[0-9a-fA-F:]+:[0-9a-fA-F:]*$/.test(rawTok)) return { cidr: `${rawTok}/128`, nextIdx: idx + 1 };
     if (/^\d+\.\d+\.\d+\.\d+$/.test(t) && tokens[idx + 1] && /^\d+\.\d+\.\d+\.\d+$/.test(tokens[idx + 1])) {
       return { cidr: `${t}/${wildcardToPrefixLenLocal(tokens[idx + 1])}`, nextIdx: idx + 2 };
     }
     if (/^\d+\.\d+\.\d+\.\d+$/.test(t)) return { cidr: `${t}/32`, nextIdx: idx + 1 };
-    return { cidr: '0.0.0.0/0', nextIdx: idx + 1 };
+    return { cidr: defaultIpv6 ? '::/0' : '0.0.0.0/0', nextIdx: idx + 1 };
   };
 
   const skipPortClause = (tokens: string[], idx: number): number => {
@@ -296,7 +328,7 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
     return idx;
   };
 
-  const parseAce = (aceText: string, aclName: string, isStandard: boolean) => {
+  const parseAce = (aceText: string, aclName: string, isStandard: boolean, isIpv6 = false) => {
     const cleanAce = aceText.replace(/\s*!.*$/, '').trim();
     if (!cleanAce) return;
     const tokens = cleanAce.split(/\s+/);
@@ -313,27 +345,28 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
     let dst: { cidr: string; nextIdx: number };
     let dstPort: number | undefined;
     if (isStandard) {
-      src = parseEndpoint(tokens, i + 1);
-      dst = { cidr: '0.0.0.0/0', nextIdx: src.nextIdx };
+      src = parseEndpoint(tokens, i + 1, isIpv6);
+      dst = { cidr: isIpv6 ? '::/0' : '0.0.0.0/0', nextIdx: src.nextIdx };
     } else {
       const protoRaw = (tokens[i + 1] ?? '').toLowerCase();
       protocol = protoRaw === 'tcp' || protoRaw === 'udp' || protoRaw === 'icmp' ? protoRaw : 'any';
-      src = parseEndpoint(tokens, i + 2);
+      src = parseEndpoint(tokens, i + 2, isIpv6);
       const dstStart = skipPortClause(tokens, src.nextIdx);
-      dst = parseEndpoint(tokens, dstStart);
+      dst = parseEndpoint(tokens, dstStart, isIpv6);
       const eqIdx = tokens.findIndex((tok, k) => k >= dst.nextIdx && tok.toLowerCase() === 'eq');
       if (eqIdx >= 0 && tokens[eqIdx + 1]) {
         const resolved = resolveServiceToken(tokens[eqIdx + 1], new Map());
         dstPort = resolved.dstPort ?? (Number.isFinite(Number(tokens[eqIdx + 1])) ? Number(tokens[eqIdx + 1]) : undefined);
       }
     }
+    const norm = normalizeRuleAf(src.cidr, dst.cidr);
     rules.push({
       id: `acl-cisco-${Date.now()}-${rules.length}`,
       seq: explicitSeq ?? (rules.length + 1) * 10,
       name: `${aclName}-${rules.length + 1}`,
       action: actRaw === 'permit' ? 'allow' : 'deny',
-      srcCidr: src.cidr,
-      dstCidr: dst.cidr,
+      srcCidr: norm.srcCidr,
+      dstCidr: norm.dstCidr,
       protocol,
       dstPort,
     });
@@ -345,25 +378,28 @@ export function parseCiscoStyleAclRules(lines: string[]): AclRuleConfig[] {
       if (t === '!') {
         currentAclName = null;
         currentAclIsStandard = false;
+        currentAclIsIpv6 = false;
       }
       continue;
     }
-    const extAcl = t.match(/^(?:ipv4\s+access-list|ip\s+access-list(?:\s+(extended|standard))?|access-list\s+ip)\s+(\S+)/i);
+    const extAcl = t.match(/^(?:(ipv[46])\s+access-list|ip\s+access-list(?:\s+(extended|standard))?|access-list\s+ip)\s+(\S+)/i);
     if (extAcl) {
-      currentAclIsStandard = (extAcl[1] ?? '').toLowerCase() === 'standard';
-      currentAclName = extAcl[2];
+      currentAclIsIpv6 = (extAcl[1] ?? '').toLowerCase() === 'ipv6';
+      currentAclIsStandard = (extAcl[2] ?? '').toLowerCase() === 'standard';
+      currentAclName = extAcl[3];
       continue;
     }
     const numAcl = t.match(/^access-list\s+(1\d\d|2\d\d\d)\s+((?:permit|deny)\s+.+)$/i);
     if (numAcl) {
-      parseAce(numAcl[2], `ACL-${numAcl[1]}`, false);
+      parseAce(numAcl[2], `ACL-${numAcl[1]}`, false, false);
       continue;
     }
     if (currentAclName && /^(?:\d+\s+)?(?:permit|deny)\s+/i.test(t)) {
-      parseAce(t, currentAclName, currentAclIsStandard);
+      parseAce(t, currentAclName, currentAclIsStandard, currentAclIsIpv6);
     } else if (/^(?:interface|router|vrf|route-map|hostname)\s+/i.test(t)) {
       currentAclName = null;
       currentAclIsStandard = false;
+      currentAclIsIpv6 = false;
     }
   }
   return rules;
@@ -428,11 +464,17 @@ export function parseJunosAclRules(lines: string[]): AclRuleConfig[] {
     }
   }
 
-  return ruleOrder.map((key, idx) => ({
-    id: `acl-junos-${Date.now()}-${idx}`,
-    seq: (idx + 1) * 10,
-    ...ruleMap.get(key)!,
-  }));
+  return ruleOrder.map((key, idx) => {
+    const r = ruleMap.get(key)!;
+    const norm = normalizeRuleAf(r.srcCidr, r.dstCidr);
+    return {
+      id: `acl-junos-${Date.now()}-${idx}`,
+      seq: (idx + 1) * 10,
+      ...r,
+      srcCidr: norm.srcCidr,
+      dstCidr: norm.dstCidr,
+    };
+  });
 }
 
 export function parseVyosAclRules(lines: string[]): AclRuleConfig[] {
@@ -470,10 +512,16 @@ export function parseVyosAclRules(lines: string[]): AclRuleConfig[] {
     }
   }
 
-  return ruleOrder.map((key, idx) => ({
-    id: `acl-vyos-${Date.now()}-${idx}`,
-    ...ruleMap.get(key)!,
-  }));
+  return ruleOrder.map((key, idx) => {
+    const r = ruleMap.get(key)!;
+    const norm = normalizeRuleAf(r.srcCidr, r.dstCidr);
+    return {
+      id: `acl-vyos-${Date.now()}-${idx}`,
+      ...r,
+      srcCidr: norm.srcCidr,
+      dstCidr: norm.dstCidr,
+    };
+  });
 }
 
 export function parseMikrotikAclRules(lines: string[]): AclRuleConfig[] {
@@ -501,13 +549,17 @@ export function parseMikrotikAclRules(lines: string[]): AclRuleConfig[] {
     const protoM = line.match(/\bprotocol=(tcp|udp|icmp)/i);
     const portM = line.match(/\bdst-port=(\d+)/i);
     const cmtM = line.match(/\bcomment=(?:"([^"]+)"|(\S+))/i);
+    const normMt = normalizeRuleAf(
+      srcM ? resolveAddressToken(srcM[1], new Map()) : '0.0.0.0/0',
+      dstM ? resolveAddressToken(dstM[1], new Map()) : '0.0.0.0/0'
+    );
     rules.push({
       id: `acl-mt-${Date.now()}-${rules.length}`,
       seq: (rules.length + 1) * 10,
       name: (cmtM?.[1] ?? cmtM?.[2])?.trim() || `mt-filter-${rules.length + 1}`,
       action: act === 'accept' ? 'allow' : 'deny',
-      srcCidr: srcM ? resolveAddressToken(srcM[1], new Map()) : '0.0.0.0/0',
-      dstCidr: dstM ? resolveAddressToken(dstM[1], new Map()) : '0.0.0.0/0',
+      srcCidr: normMt.srcCidr,
+      dstCidr: normMt.dstCidr,
       protocol: (protoM?.[1]?.toLowerCase() as L4Protocol) ?? 'any',
       dstPort: portM ? Number(portM[1]) : undefined,
     });
@@ -539,13 +591,17 @@ export function parseCheckpointGaiaAclRules(lines: string[]): AclRuleConfig[] {
     const actM = line.match(/\baction\s+"?(accept|drop|reject)"?/i);
     const svcVal = svcM ? (svcM[1] ?? svcM[2]) : undefined;
     const svc = svcVal ? resolveServiceToken(svcVal, new Map()) : { protocol: 'any' as L4Protocol };
+    const normCp = normalizeRuleAf(
+      srcM ? resolveAddressToken(srcM[1] ?? srcM[2], addrBook) : '0.0.0.0/0',
+      dstM ? resolveAddressToken(dstM[1] ?? dstM[2], addrBook) : '0.0.0.0/0'
+    );
     rules.push({
       id: `acl-cp-${Date.now()}-${rules.length}`,
       seq: (rules.length + 1) * 10,
       name: (nameM ? (nameM[1] ?? nameM[2]) : undefined) || `cp-rule-${rules.length + 1}`,
       action: (actM?.[1] ?? 'accept').toLowerCase() === 'accept' ? 'allow' : 'deny',
-      srcCidr: srcM ? resolveAddressToken(srcM[1] ?? srcM[2], addrBook) : '0.0.0.0/0',
-      dstCidr: dstM ? resolveAddressToken(dstM[1] ?? dstM[2], addrBook) : '0.0.0.0/0',
+      srcCidr: normCp.srcCidr,
+      dstCidr: normCp.dstCidr,
       protocol: svc.protocol,
       dstPort: svc.dstPort,
     });
@@ -583,6 +639,8 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
       if (isAwsEgress) finalDst = awsCidrRaw;
       else finalSrc = awsCidrRaw;
     }
+    if (finalSrc.includes(':') && finalDst === '0.0.0.0/0') finalDst = '::/0';
+    else if (finalDst.includes(':') && finalSrc === '0.0.0.0/0') finalSrc = '::/0';
     const finalDstPort =
       dstPort === 0 && (protocol === 'any' || toPort === 0 || toPort === 65535)
         ? undefined
@@ -626,13 +684,17 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
       const dstM = line.match(/--destination-address-prefix(?:es)?\s+"?([^"\s]+)"?/i);
       const portM = line.match(/--destination-port-ranges?\s+"?(\d+)/i);
       const p = (protoM?.[1] ?? '*').toLowerCase();
+      let azSrc = !srcM || srcM[1] === '*' ? '0.0.0.0/0' : srcM[1];
+      let azDst = !dstM || dstM[1] === '*' ? '0.0.0.0/0' : dstM[1];
+      if (azSrc.includes(':') && azDst === '0.0.0.0/0') azDst = '::/0';
+      else if (azDst.includes(':') && azSrc === '0.0.0.0/0') azSrc = '::/0';
       rules.push({
         id: `acl-az-${Date.now()}-${rules.length}`,
         seq: prioM ? Number(prioM[1]) : (rules.length + 1) * 10,
         name: nameM?.[1] || `az-nsg-${rules.length + 1}`,
         action: (accM?.[1] ?? 'Allow').toLowerCase() === 'deny' ? 'deny' : 'allow',
-        srcCidr: !srcM || srcM[1] === '*' ? '0.0.0.0/0' : srcM[1],
-        dstCidr: !dstM || dstM[1] === '*' ? '0.0.0.0/0' : dstM[1],
+        srcCidr: azSrc,
+        dstCidr: azDst,
         protocol: p === 'tcp' || p === 'udp' || p === 'icmp' ? (p as L4Protocol) : 'any',
         ...(portM ? { dstPort: Number(portM[1]) } : {}),
       });
@@ -653,13 +715,14 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
       const parsedProto: L4Protocol =
         protoPart === 'tcp' || protoPart === 'udp' || protoPart === 'icmp' ? (protoPart as L4Protocol) : 'any';
       const parsedPort = portPart && /^\d+/.test(portPart) ? Number(portPart.match(/^\d+/)![0]) : undefined;
+      const gcpSrc = srcM?.[1] || '0.0.0.0/0';
       rules.push({
         id: `acl-gcp-${Date.now()}-${rules.length}`,
         seq: prioM ? Number(prioM[1]) : (rules.length + 1) * 10,
         name: nameM?.[1] || `gcp-fw-${rules.length + 1}`,
         action: (actM?.[1] ?? 'ALLOW').toLowerCase() === 'deny' ? 'deny' : 'allow',
-        srcCidr: srcM?.[1] || '0.0.0.0/0',
-        dstCidr: '0.0.0.0/0',
+        srcCidr: gcpSrc,
+        dstCidr: gcpSrc.includes(':') ? '::/0' : '0.0.0.0/0',
         protocol: parsedProto,
         ...(parsedPort !== undefined ? { dstPort: parsedPort } : {}),
         ...(tagM ? { networkTag: tagM[1] } : {}),
@@ -710,9 +773,9 @@ export function parseCloudAclRules(lines: string[]): AclRuleConfig[] {
       else if (p === 'icmp' || p === '1') protocol = 'icmp';
       else protocol = 'any';
     }
-    const awsCidrEq = line.match(/\bcidr_block\s*=\s*"([^"]+)"/i);
+    const awsCidrEq = line.match(/\b(?:ipv6_)?cidr_block\s*=\s*"([^"]+)"/i);
     if (awsCidrEq) awsCidrRaw = awsCidrEq[1];
-    const awsCidrArrEq = line.match(/\bcidr_blocks\s*=\s*\[\s*"([^"]+)"/i);
+    const awsCidrArrEq = line.match(/\b(?:ipv6_)?cidr_blocks\s*=\s*\[\s*"([^"]+)"/i);
     if (awsCidrArrEq) awsCidrRaw = awsCidrArrEq[1];
     const srcEq = line.match(/\bsource_address_prefix\s*=\s*"([^"]+)"/i);
     if (srcEq) srcCidr = srcEq[1] === '*' ? '0.0.0.0/0' : srcEq[1];

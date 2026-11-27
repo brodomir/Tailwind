@@ -99,6 +99,7 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
     simResult,
     baselineSimResult,
     selectedNodeId,
+    themeMode,
     setTraceParams,
     runTrace,
     applyParsedNodeConfig,
@@ -718,7 +719,11 @@ export const CliOutputPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             }}
             autoSize={{ minRows: 14, maxRows: 30 }}
             spellCheck={false}
-            className="!border-slate-700 !bg-[#0b1120] !font-mono !text-xs !leading-relaxed !text-amber-200"
+            className={
+              themeMode === 'light'
+                ? '!border-black/15 !bg-white !font-mono !text-xs !leading-relaxed !text-[#1c1c1e]'
+                : '!border-slate-700 !bg-[#0b1120] !font-mono !text-xs !leading-relaxed !text-amber-200'
+            }
           />
         </div>
       ),

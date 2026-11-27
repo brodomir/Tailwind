@@ -781,7 +781,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     }
                   />
                 )}
-                {node.vendor === 'cisco-nx-os' && (
+                {(node.vendor === 'cisco-nx-os' || Boolean(node.vpc?.enabled)) && (
                   <InputNumber
                     size="small"
                     className="col-span-2 !w-full"
@@ -794,7 +794,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     }
                   />
                 )}
-                {node.vendor === 'arista-eos' && (
+                {(node.vendor === 'arista-eos' || Boolean(node.mlag?.enabled)) && (
                   <InputNumber
                     size="small"
                     className="col-span-2 !w-full"
@@ -852,7 +852,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     )}
                   </>
                 )}
-                {node.vendor === 'cisco-sdwan' && (
+                {(node.vendor === 'cisco-sdwan' || Boolean(node.sdwan?.enabled)) && (
                   <>
                     <Select
                       size="small"
@@ -1527,18 +1527,22 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
                     })
                   }
                 />
-                <Input
+                <Select
                   size="small"
                   className="col-span-3"
                   placeholder="VRF"
                   value={t.vrf ?? 'default'}
-                  onChange={(e) =>
+                  onChange={(val) =>
                     updateNode(node.id, {
                       tracks: (node.tracks ?? []).map((x, i) =>
-                        i === idx ? { ...x, vrf: e.target.value || 'default' } : x
+                        i === idx ? { ...x, vrf: val || 'default' } : x
                       ),
                     })
                   }
+                  options={Array.from(new Set([...vrfs, t.vrf ?? 'default'])).map((v) => ({
+                    value: v,
+                    label: v,
+                  }))}
                 />
                 <Button
                   size="small"
@@ -1761,10 +1765,17 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       label: 'Protocols',
       children: (
         <div className="space-y-2.5">
-          {(caps.igps.ospf || caps.igps.eigrp || caps.igps.isis || caps.igps.rip) && (
+          {(caps.igps.ospf ||
+            caps.igps.eigrp ||
+            caps.igps.isis ||
+            caps.igps.rip ||
+            node.ospf.enabled ||
+            node.eigrp?.enabled ||
+            node.isis?.enabled ||
+            node.rip?.enabled) && (
             <Card size="small">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                {caps.igps.ospf && (
+                {(caps.igps.ospf || node.ospf.enabled) && (
                   <Space>
                     <span className="font-semibold text-emerald-300">OSPF</span>
                     <Switch
@@ -2967,7 +2978,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'cisco-nx-os' && (
+          {(node.vendor === 'cisco-nx-os' || Boolean(node.vpc?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-cyan-300">NX-OS vPC Domain</span>}
@@ -3146,7 +3157,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'pan-os' && (
+          {(node.vendor === 'pan-os' || Boolean(node.panHa?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-amber-300">PAN-OS HA &amp; HSCI Session Peering</span>}
@@ -3262,7 +3273,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'fortigate' && (
+          {(node.vendor === 'fortigate' || Boolean(node.fortiHa?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-rose-300">FortiGate FGCP HA Cluster</span>}
@@ -3774,7 +3785,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'forcepoint-ngfw' && (
+          {(node.vendor === 'forcepoint-ngfw' || Boolean(node.forcepointCluster?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-emerald-300">Forcepoint NGFW Cluster</span>}
@@ -3848,7 +3859,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'arista-eos' && (
+          {(node.vendor === 'arista-eos' || Boolean(node.mlag?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-sky-300">Arista EOS MLAG</span>}
@@ -3915,7 +3926,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {node.vendor === 'cisco-sdwan' && (
+          {(node.vendor === 'cisco-sdwan' || Boolean(node.sdwan?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-cyan-300">Cisco SD-WAN (OMP & TLOC Overlay)</span>}
@@ -4025,7 +4036,8 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {['fortigate', 'pan-os', 'prisma-sdwan', 'cisco-sdwan'].includes(node.vendor) && (
+          {(['fortigate', 'pan-os', 'prisma-sdwan', 'cisco-sdwan'].includes(node.vendor) ||
+            Boolean(node.sdwanSla?.enabled)) && (
             <Card
               size="small"
               title={<span className="text-emerald-300">SD-WAN Performance SLA &amp; Path Steering</span>}
@@ -4239,7 +4251,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
             </Card>
           )}
 
-          {(caps.mpls || caps.switching || caps.multicast) && (() => {
+          {(() => {
             const hasAdvProtoActive = Boolean(
               node.mpls?.ldpEnabled ||
               node.mpls?.segmentRouting?.enabled ||
@@ -4253,21 +4265,20 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
               (node.bgp.flowspecRules?.length ?? 0) > 0 ||
               (node.nat64Rules?.length ?? 0) > 0
             );
+            if (!(caps.mpls || caps.switching || caps.multicast || hasAdvProtoActive)) return null;
             const showAdvProtoBody = hasAdvProtoActive || advProtoExpanded;
+            const advTitle =
+              [
+                caps.mpls ? 'MPLS / SR' : null,
+                caps.switching ? 'Switching' : null,
+                caps.multicast ? 'Multicast' : null,
+              ]
+                .filter(Boolean)
+                .join(' / ') || 'Advanced Protocols & Telemetry';
             return (
               <Card
                 size="small"
-                title={
-                  <span className="text-teal-300">
-                    {[
-                      caps.mpls ? 'MPLS / SR' : null,
-                      caps.switching ? 'Switching' : null,
-                      caps.multicast ? 'Multicast' : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' / ')}
-                  </span>
-                }
+                title={<span className="text-teal-300">{advTitle}</span>}
                 extra={
                   <Switch
                     size="small"
@@ -5806,7 +5817,7 @@ export const InspectorPanel: React.FC<{ headerExtra?: React.ReactNode }> = ({ he
       children: (
         <div className="space-y-3">
           <Card size="small" title={caps.vrfLabel}>
-            {node.vendor === 'forcepoint-ngfw' && (
+            {(node.vendor === 'forcepoint-ngfw' || Boolean(node.forcepointCluster?.enabled)) && (
               <Alert
                 type="info"
                 showIcon

@@ -395,16 +395,18 @@ export const TopBar: React.FC = () => {
   };
 
   const handleCreateWorkspace = () => {
-    createWorkspace(newWsName);
+    const saved = createWorkspace(newWsName);
     setNewWsOpen(false);
     setNewWsName('');
-    msgApi.success('New blank workspace created');
+    if (saved) msgApi.success('New blank workspace created');
+    else msgApi.error('Workspace created in memory, but browser storage quota was exceeded');
   };
 
   const handleSaveWorkspace = () => {
     if (isCustomWorkspace) {
-      saveCurrentWorkspace();
-      msgApi.success('Workspace saved');
+      const saved = saveCurrentWorkspace();
+      if (saved) msgApi.success('Workspace saved');
+      else msgApi.error('Failed to persist workspace: browser storage quota exceeded');
     } else {
       const preset = PRESET_TOPOLOGIES.find((p) => p.id === activePresetId);
       setWsModalName(preset ? `${preset.name} Copy` : `Lab-${workspaces.length + 1}`);
@@ -423,11 +425,13 @@ export const TopBar: React.FC = () => {
     const trimmed = wsModalName.trim();
     if (!trimmed) return;
     if (wsNameModalMode === 'save-copy') {
-      saveCurrentWorkspace(trimmed);
-      msgApi.success(`Saved as "${trimmed}" in My Workspaces`);
+      const saved = saveCurrentWorkspace(trimmed);
+      if (saved) msgApi.success(`Saved as "${trimmed}" in My Workspaces`);
+      else msgApi.error('Failed to persist workspace: browser storage quota exceeded');
     } else if (wsNameModalMode === 'rename') {
-      renameWorkspace(activePresetId, trimmed);
-      msgApi.success(`Renamed workspace to "${trimmed}"`);
+      const saved = renameWorkspace(activePresetId, trimmed);
+      if (saved) msgApi.success(`Renamed workspace to "${trimmed}"`);
+      else msgApi.error('Failed to persist rename: browser storage quota exceeded');
     }
     setWsNameModalMode(null);
     setWsModalName('');
@@ -753,7 +757,9 @@ export const TopBar: React.FC = () => {
               />
               <Input
                 value={traceDstIp}
-                onChange={(e) => setTraceParams(traceSrcNodeId, e.target.value)}
+                onChange={(e) =>
+                  setTraceParams(traceSrcNodeId, e.target.value, undefined, undefined, undefined, undefined, null)
+                }
                 onPressEnter={runTrace}
                 placeholder="IPv4 or IPv6"
                 style={{ width: 135, fontFamily: 'monospace' }}
@@ -761,7 +767,15 @@ export const TopBar: React.FC = () => {
               <Select
                 value={traceProto}
                 onChange={(val) =>
-                  setTraceParams(traceSrcNodeId, traceDstIp, traceVrf, val as L4Protocol)
+                  setTraceParams(
+                    traceSrcNodeId,
+                    traceDstIp,
+                    traceVrf,
+                    val as L4Protocol,
+                    undefined,
+                    undefined,
+                    null
+                  )
                 }
                 style={{ width: 72 }}
                 options={[
@@ -780,7 +794,9 @@ export const TopBar: React.FC = () => {
                     traceDstIp,
                     traceVrf,
                     traceProto,
-                    raw ? Number(raw) : null
+                    raw ? Number(raw) : null,
+                    undefined,
+                    null
                   );
                 }}
                 onPressEnter={runTrace}
@@ -970,6 +986,7 @@ export const TopBar: React.FC = () => {
                     name: `${srcNode?.hostname ?? 'Src'} → ${traceDstIp}`,
                     srcNodeId: traceSrcNodeId,
                     srcInterfaceId: traceSrcInterfaceId,
+                    srcIp: useSimStore.getState().traceSrcIp,
                     dstIp: traceDstIp,
                     vrf: traceVrf,
                     protocol: traceProto,

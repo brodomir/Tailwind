@@ -58,19 +58,33 @@ function loadSavedWorkspaces(): SavedWorkspace[] {
   try {
     const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as SavedWorkspace[];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (w): w is SavedWorkspace =>
+        Boolean(
+          w &&
+          typeof w === 'object' &&
+          typeof w.id === 'string' &&
+          typeof w.name === 'string' &&
+          w.topology &&
+          typeof w.topology === 'object' &&
+          Array.isArray(w.topology.nodes) &&
+          Array.isArray(w.topology.links)
+        )
+    );
   } catch {
     return [];
   }
 }
 
-function persistWorkspaces(workspaces: SavedWorkspace[]) {
-  if (typeof localStorage === 'undefined') return;
+function persistWorkspaces(workspaces: SavedWorkspace[]): boolean {
+  if (typeof localStorage === 'undefined') return true;
   try {
     localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspaces));
+    return true;
   } catch {
-    // Ignore storage quota errors
+    return false;
   }
 }
 
@@ -176,9 +190,9 @@ interface SimStore {
   setRoaTable: (roaTable: RoaEntry[]) => void;
   selectNode: (nodeId: string | null) => void;
   loadPreset: (presetId: string) => void;
-  createWorkspace: (name: string) => void;
-  saveCurrentWorkspace: (name?: string) => void;
-  renameWorkspace: (workspaceId: string, name: string) => void;
+  createWorkspace: (name: string) => boolean;
+  saveCurrentWorkspace: (name?: string) => boolean;
+  renameWorkspace: (workspaceId: string, name: string) => boolean;
   loadWorkspace: (workspaceId: string) => void;
   deleteWorkspace: (workspaceId: string) => void;
   importTopology: (topology: TopologyState) => void;
@@ -349,11 +363,11 @@ export const useSimStore = create<SimStore>((set, get) => {
         .map((i) =>
           deletedName
             ? {
-                ...i,
-                unnumberedSource: i.unnumberedSource === deletedName ? undefined : i.unnumberedSource,
-                parentInterface: i.parentInterface === deletedName ? undefined : i.parentInterface,
-                tlocExtension: i.tlocExtension === deletedName ? undefined : i.tlocExtension,
-              }
+              ...i,
+              unnumberedSource: i.unnumberedSource === deletedName ? undefined : i.unnumberedSource,
+              parentInterface: i.parentInterface === deletedName ? undefined : i.parentInterface,
+              tlocExtension: i.tlocExtension === deletedName ? undefined : i.tlocExtension,
+            }
             : i
         ),
       staticRoutes: deletedName
@@ -396,13 +410,13 @@ export const useSimStore = create<SimStore>((set, get) => {
       vpc: node.vpc ? { ...node.vpc, peerLinkInterfaceId: clearIf(node.vpc.peerLinkInterfaceId) } : undefined,
       mlag: node.mlag
         ? {
-            ...node.mlag,
-            peerLinkInterfaceId: clearIf(node.mlag.peerLinkInterfaceId),
-            localInterface:
-              deletedName && node.mlag.localInterface === deletedName
-                ? undefined
-                : node.mlag.localInterface,
-          }
+          ...node.mlag,
+          peerLinkInterfaceId: clearIf(node.mlag.peerLinkInterfaceId),
+          localInterface:
+            deletedName && node.mlag.localInterface === deletedName
+              ? undefined
+              : node.mlag.localInterface,
+        }
         : undefined,
       panHa: node.panHa
         ? {
@@ -1055,7 +1069,7 @@ export const useSimStore = create<SimStore>((set, get) => {
         updatedAt: Date.now(),
       };
       const nextWorkspaces = [...get().workspaces, ws];
-      persistWorkspaces(nextWorkspaces);
+      const saved = persistWorkspaces(nextWorkspaces);
       set({
         workspaces: nextWorkspaces,
         topology: blankTopology,
@@ -1073,6 +1087,7 @@ export const useSimStore = create<SimStore>((set, get) => {
         future: [],
       });
       triggerSolve(blankTopology);
+      return saved;
     },
 
     saveCurrentWorkspace: (name) => {
@@ -1089,9 +1104,9 @@ export const useSimStore = create<SimStore>((set, get) => {
             }
             : w
         );
-        persistWorkspaces(updated);
+        const saved = persistWorkspaces(updated);
         set({ workspaces: updated });
-        return;
+        return saved;
       }
       const id = `ws-${Date.now()}`;
       const ws: SavedWorkspace = {
@@ -1102,8 +1117,9 @@ export const useSimStore = create<SimStore>((set, get) => {
         updatedAt: Date.now(),
       };
       const nextWorkspaces = [...workspaces, ws];
-      persistWorkspaces(nextWorkspaces);
+      const saved = persistWorkspaces(nextWorkspaces);
       set({ workspaces: nextWorkspaces, activePresetId: id });
+      return saved;
     },
 
     loadWorkspace: (workspaceId) => {
@@ -1138,12 +1154,13 @@ export const useSimStore = create<SimStore>((set, get) => {
 
     renameWorkspace: (workspaceId, name) => {
       const trimmed = name.trim();
-      if (!trimmed) return;
+      if (!trimmed) return false;
       const nextWorkspaces = get().workspaces.map((w) =>
         w.id === workspaceId ? { ...w, name: trimmed, updatedAt: Date.now() } : w
       );
-      persistWorkspaces(nextWorkspaces);
+      const saved = persistWorkspaces(nextWorkspaces);
       set({ workspaces: nextWorkspaces });
+      return saved;
     },
 
     setTraceParams: (srcNodeId, dstIp, vrf, proto, port, srcInterfaceId, srcIp) =>
@@ -1195,7 +1212,7 @@ export const useSimStore = create<SimStore>((set, get) => {
       set({ traceResult });
     },
 
-    clearTrace: () => set({ traceResult: null }),
+    clearTrace: () => set({ traceResult: null, traceSrcIp: undefined }),
     setTraceResult: (res) =>
       set({
         traceResult: res,

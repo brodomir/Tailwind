@@ -1,5 +1,5 @@
 import { NodeConfig, NodeRoutingResult, RibEntry } from '../types/network';
-import { parseCidr, uint32ToIp } from './ipMath';
+import { detectAddressFamily, parseCidr, parseCidr6, uint32ToIp } from './ipMath';
 
 function ciscoCode(entry: RibEntry): string {
   switch (entry.protocol) {
@@ -1279,7 +1279,8 @@ export function formatRunningConfig(node: NodeConfig): string {
     }
     for (const sr of node.staticRoutes) {
       const vrfPfx = sr.vrf && sr.vrf !== 'default' ? `vrf name ${sr.vrf} ` : '';
-      lines.push(`set ${vrfPfx}protocols static route ${sr.prefix} next-hop ${sr.nextHop}`);
+      const routeKw = detectAddressFamily(sr.prefix) === 6 ? 'route6' : 'route';
+      lines.push(`set ${vrfPfx}protocols static ${routeKw} ${sr.prefix} next-hop ${sr.nextHop}`);
     }
     if (node.ospf.enabled) {
       lines.push(`set protocols ospf parameters router-id '${node.routerId}'`);
@@ -1396,7 +1397,8 @@ export function formatRunningConfig(node: NodeConfig): string {
     for (const sr of node.staticRoutes) {
       const rt = sr.vrf && sr.vrf !== 'default' && sr.vrf !== 'main' ? ` routing-table=${sr.vrf}` : '';
       const dist = sr.ad !== undefined ? ` distance=${sr.ad}` : '';
-      lines.push(`/ip route add dst-address=${sr.prefix} gateway=${sr.nextHop}${rt}${dist}`);
+      const protoCmd = detectAddressFamily(sr.prefix) === 6 ? '/ipv6' : '/ip';
+      lines.push(`${protoCmd} route add dst-address=${sr.prefix} gateway=${sr.nextHop}${rt}${dist}`);
     }
     if (node.ospf.enabled) {
       lines.push(`/routing ospf instance add name=default-v2 router-id=${node.routerId}`);
@@ -1754,12 +1756,18 @@ export function formatRunningConfig(node: NodeConfig): string {
   }
 
   for (const sr of node.staticRoutes) {
-    const parsed = parseCidr(sr.prefix);
     const vrfPart = sr.vrf && sr.vrf !== 'default' && !isForcepoint ? `vrf ${sr.vrf} ` : '';
     const adPart = sr.ad ? ` ${sr.ad}` : '';
+    const trackPart = sr.trackId ? ` track ${sr.trackId}` : '';
+    const tagPart = sr.tag !== undefined ? ` tag ${sr.tag}` : '';
+    if (detectAddressFamily(sr.prefix) === 6) {
+      lines.push(
+        `ipv6 route ${vrfPart}${sr.prefix} ${sr.nextHop}${sr.globalNextHop ? ' global' : ''}${adPart}${trackPart}${tagPart}`
+      );
+      continue;
+    }
+    const parsed = parseCidr(sr.prefix);
     if (parsed) {
-      const trackPart = sr.trackId ? ` track ${sr.trackId}` : '';
-      const tagPart = sr.tag !== undefined ? ` tag ${sr.tag}` : '';
       lines.push(
         isForcepoint
           ? `ip route ${sr.prefix} ${sr.nextHop}${adPart}${trackPart}${tagPart}`
@@ -2056,6 +2064,9 @@ export function formatRunningConfig(node: NodeConfig): string {
       const parsed = parseCidr(n.prefix);
       if (parsed) {
         lines.push(` network ${parsed.network} mask ${uint32ToIp(parsed.maskUint32)}`);
+      } else {
+        const parsed6 = parseCidr6(n.prefix);
+        if (parsed6) lines.push(` network ${parsed6.network}/${parsed6.prefixLen}`);
       }
     }
     const bgpVrfs = Array.from(
@@ -2078,6 +2089,9 @@ export function formatRunningConfig(node: NodeConfig): string {
         const parsed = parseCidr(n.prefix);
         if (parsed) {
           lines.push(`  network ${parsed.network} mask ${uint32ToIp(parsed.maskUint32)}`);
+        } else {
+          const parsed6 = parseCidr6(n.prefix);
+          if (parsed6) lines.push(`  network ${parsed6.network}/${parsed6.prefixLen}`);
         }
       }
       for (const agg of (node.bgp.aggregates ?? []).filter((a) => (a.vrf || 'default') === vrfName)) {
@@ -2086,6 +2100,13 @@ export function formatRunningConfig(node: NodeConfig): string {
           lines.push(
             `  aggregate-address ${parsed.network} ${uint32ToIp(parsed.maskUint32)}${agg.summaryOnly ? ' summary-only' : ''}${agg.asSet ? ' as-set' : ''}`
           );
+        } else {
+          const parsed6 = parseCidr6(agg.prefix);
+          if (parsed6) {
+            lines.push(
+              `  aggregate-address ${parsed6.network}/${parsed6.prefixLen}${agg.summaryOnly ? ' summary-only' : ''}${agg.asSet ? ' as-set' : ''}`
+            );
+          }
         }
       }
       for (const r of node.redistributions.filter((x) => x.to === 'bgp' && (x.vrf || 'default') === vrfName)) {
@@ -2099,6 +2120,13 @@ export function formatRunningConfig(node: NodeConfig): string {
         lines.push(
           ` aggregate-address ${parsed.network} ${uint32ToIp(parsed.maskUint32)}${agg.summaryOnly ? ' summary-only' : ''}${agg.asSet ? ' as-set' : ''}`
         );
+      } else {
+        const parsed6 = parseCidr6(agg.prefix);
+        if (parsed6) {
+          lines.push(
+            ` aggregate-address ${parsed6.network}/${parsed6.prefixLen}${agg.summaryOnly ? ' summary-only' : ''}${agg.asSet ? ' as-set' : ''}`
+          );
+        }
       }
     }
     for (const r of node.redistributions.filter((x) => x.to === 'bgp' && (x.vrf || 'default') === 'default')) {

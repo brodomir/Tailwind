@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [v0.2.0-beta.9] - 2026-11-27
+
+### Fixed
+- **Recursive Solver & Routing Engine Hardening (`solver.ts`, `standards.ts`, `network.ts`)**:
+  - **OSPF / OSPFv3**: Fixed dual-ABR Type-3 `inter` LSA re-injection back into Area 0 (RFC 2328 §12.4.3) and prevented ABRs from installing peer-ABR stub defaults; fixed single-ABR Area 1 ↔ Area 2 `intra` → `inter` propagation; restricted ABR detection to Area 0 `intra`/`inter` LSAs; enabled OSPFv3 IPv6 redistribution and IPv6-only AF guards; fixed virtual-link ABR & Area 2 → Area 0 propagation and `nssaNoSummary` coalescing; resolved `unnumberedSource` adjacencies in `buildAdjacencies`.
+  - **BGP / MP-BGP**: Added RFC 4456 `originatorId` & sender split-horizon so Route Reflectors never reflect eBGP-learned routes back to the sending client; skipped RR `CLUSTER_LIST` on eBGP routes and stripped `CLUSTER_LIST` on true eBGP export; added RFC 5065 confed-eBGP split-horizon exemption (`learnedFromConfedEbgp`) and scoped `confedAsPath` loop checks to intra-confederation sessions; VRF-scoped `learnedFromRrClient`/`learnedFromConfedEbgp`; moved AS-path loop prevention after outbound `routeMapOut` (`prependAsPath`); enabled IPv6 redistribution & IPv6 `aggregate-address` (with dynamic `asSet`), allowed `aggregate-address` to override non-local peer routes, withdrew generated aggregates & recomputed `asSet` when contributors disappear; routed `defaultOriginate` through `inRm`/`maxPrefixes`/confed/`localAs`; fixed BGP multipath convergence & Add-Path dirty tracking and included `asSet`/`confedAsPath`/`clusterList`/`originatorId` in convergence diff; enforced cloud `preferPrivateCircuit` inside `solveBgp` for `maxPaths === 1`.
+  - **EIGRP / IS-IS / RIP**: Enforced EIGRP internal (AD 90) > external (AD 170) preference during convergence and ECMP/FS selection; added IPv6-only AF guards across EIGRP/IS-IS/RIP; implemented IS-IS RFC 5302 §3.3 ranking (native L1 > L2 > leaked L1), `summaries` propagation & per-VRF `Null0`, ATT-bit dual-ABR ECMP with local-origin guard, `attBitDefault` no-loop guard + `overloadPenalty`, and L1-L2 Up/Down propagation over L1.
+  - **Overlays, SD-WAN, Switching & Next-Hop Resolution**: Added two-pass own-IP rejection in `resolveNextHop`; required underlay reachability (`underlay.resolvable`) for SD-WAN OMP routes and added TLOC-extension encap for Service VPNs; added post-convergence LISP Map-Server unreachable warnings; fixed STP Sender Bridge ID tie-break (`rootSenderByNode`), SRv6 LFIB gating on `segmentRouting.enabled`, RSVP-TE hostname-to-routerId resolution, and multicast empty `grp.source` → `'*'`.
+  - **Packet Tracer (`tracePacket`)**: Shared `normalizeAdminDownLinks` between `solveTopology` and `tracePacket` (fixing PBR/FlowSpec failover and `startIface` selection); moved overlay decapsulation **before** DNAT/NAT64/uRPF/FlowSpec/ACL/SNAT on tunnel endpoints; required `overlayRemoteVrf !== undefined` for `isMplsL3VpnRoute`; resolved steered remote TLOC color for SD-WAN SLA-steered OMP routes; fixed transit router connected-route next-hop for encapsulated overlays; fixed `startIface` default-VRF inheritance and VRF-aware default `startIface`; captured `ingressSrcIp` before NAT64 for uRPF and translated NAT64 `pool4Cidr` `srcIp`; fixed FHRP Active owner & recursive next-hop resolution on multi-access segments, VRF-scoped PBR/FlowSpec direct adjacencies, FlowSpec/PBR precedence over overlay encap & direct delivery, and cross-VRF `overlayRemoteVrf` decapsulation.
+- **IPv6 Importers, Firewall Rules & Formatters (`importer.ts`, `firewallImporter.ts`, `formatters.ts`)**:
+  - Added full IPv6 support for Cisco `ipv6 access-list`/`any6`/IPv6 `host`, `ipv6 prefix-list`, cross-vendor `normalizeRuleAf`, AWS `ipv6_cidr_block(s)`, Cisco/EOS/NX-OS/FRR IPv6 static/BGP, and Junos/MikroTik/VyOS IPv6 static & BGP peers.
+- **UI, Light Mode & Store (`index.css`, `TopologyCanvas.tsx`, `CliOutputPanel.tsx`, `InspectorPanel.tsx`, `TopBar.tsx`, `useSimStore.ts`)**:
+  - Fixed Light Mode contrast for cloud blocked fills and Running Config `<Input.TextArea>`.
+  - Kept enabled IGP/HA/SD-WAN/Advanced Protocol cards visible after vendor switch; switched Track Object VRF to `<Select>`; cleared hidden `traceSrcIp` on clear/edit, preserved `srcIp` in `addPathTest`, validated `loadSavedWorkspaces`, and returned `boolean` from `persistWorkspaces`.
+- **Tests**: Expanded test suite to **121 passing tests** across 9 test files.
+
+---
+
 ## [v0.2.0-beta.8-hotfix.1] - 2026-11-26
 
 ### Fixed
