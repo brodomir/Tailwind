@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [v0.2.0-beta.10] - 2026-11-27
+
+### Fixed
+- **Two-Consecutive-Clean-Pass Engine & Solver Certification (`solver.ts`, `standards.ts`, `diff.ts`)**:
+  - **Adjacencies, L2 Bridging & LAGs**: Enforced trunk `allowedVlans`, per-hop VLAN constraints, trunk filter-signature BFS `visited` keying, `isIfaceEligibleForL2Edge` binding (preventing phantom L3 adjacencies on unrelated interfaces), `getL2IfaceVlan` SVI/IRB/BVI VLAN parsing (`Vlan10`, `SVI10`, `irb.10`, `BVI10`), and `negotiateLagPair` across L2 switch bridging; added dual-stack IPv6 subnet validation in `pushL3Pair`; moved VLAN checks above `lagBundles` registration and added logical Port-Channel (`srcPo`/`dstPo`) VLAN validation; shut down logical Port-Channels + subinterfaces in `normalizeAdminDownLinks` when all members are down; expanded `findPeerOnInterface` for L2 Port-Channel vPC/MLAG peer-links.
+  - **OSPF / EIGRP / IS-IS**: Added active-ABR-gated `Null0` discard routes for OSPF `areaRanges` and required active non-passive `adjMap` adjacencies in NSSA Type-7→Type-5 ABR translator election; honored `iface.speedMbps` in EIGRP connected origination without `eigrp.networks` overriding connected bandwidth/delay, and advertised EIGRP summary routes as internal (AD 90); propagated `net.tag` in IS-IS `isis.networks` and enabled IS-IS `leakL2ToL1` for locally originated L2 prefixes and AF-aware IPv6 (`multiTopologyV6`).
+  - **BGP / MP-BGP**: Added immutable `nodeLocalBgp` snapshot so locally originated networks/redistributions survive temporary peer `weight > 32768`; excluded HA `standbyNodes` from `solveBgp` and BGP neighbor status; bound parallel BGP sessions (`updateSource` → `sameSubnet` → `any`) in both `solveBgp` and `solveTopology` neighbor status; enforced symmetric `ebgpMultihop`/`disableConnectedCheck`, `remotePeerBack.updateSource`, and return-path `resolveNextHop`; extended `asOverride` to rewrite `peer.localAs` and `node.bgp.confederationId`; moved `sendCommunity: 'none'` stripping after `outRm`; tracked explicit `defMedMissing` on `defaultOriginate` (`setMed: 0`); gated `isConfedPeer`/`defIsConfedPeer` on `isEbgp &&`.
+  - **Overlays, FHRP, Cloud & Packet Tracer**: Canonicalized IPv6 FHRP VIPs, cloud `preferPrivateCircuit` eBGP IPsec next-hops, `tracePacket` outer tunnel decap destinations, and multi-access recursive `immNh`; extracted shared `findLinkForAdjacency` so SD-WAN SLA compliance checks and steering resolve subinterface and Port-Channel member links.
+  - **Supporting Engine Modules (`standards.ts`, `diff.ts`)**: Scoped `computeMplsLfib` (LDP/SR-MPLS/SRv6/RSVP-TE) to `default` VRF, required prefix-length agreement + non-`adminDown`/non-self remote nodes, and made MPLS PHP order-independent across shared transit subnets; implemented full RFC 6052 §2.2 NAT64 IPv4 extraction (`/32`, `/40`, `/48`, `/56`, `/64`, `/96`); skipped shutdown IGMP receiver interfaces in `computeMulticastMroute`; added `largeCommunities`, `lisp`, `overlayRemoteVrf`, and `networkTag` to `computeRibDiff`.
+- **Tests**: Expanded test suite to **126 passing tests** across 9 test files.
+
+---
+
 ## [v0.2.0-beta.9] - 2026-11-27
 
 ### Fixed

@@ -24,10 +24,11 @@ function entryKey(r: RibEntry): string {
 function entryFingerprint(r: RibEntry): string {
   const b = r.bgpAttrs;
   const bgpPart = b
-    ? `${b.weight}|${b.localPref}|${b.asPath.join(',')}|${b.origin}|${b.med}|${(b.communities ?? []).join(',')}|${b.rpkiState ?? ''}`
+    ? `${b.weight}|${b.localPref}|${b.asPath.join(',')}|${b.origin}|${b.med}|${(b.communities ?? []).join(',')}|${(b.largeCommunities ?? []).join(',')}|${b.rpkiState ?? ''}`
     : '';
   const tlocPart = r.tloc ? `${r.tloc.systemIp}|${r.tloc.color}|${r.tloc.encap}` : '';
-  return `${r.protocol}|${r.ospfType ?? ''}|${r.isisLevel ?? ''}|${r.ad}|${r.metric}|${r.nextHop}|${r.egressInterface}|${r.leakedFromVrf ?? ''}|${r.tag ?? ''}|${r.evpnVni ?? ''}|${r.azureNextHopType ?? ''}|${r.awsTargetType ?? ''}|${r.gcpNextHopType ?? ''}|${r.gcpPriority ?? ''}|${bgpPart}|${tlocPart}`;
+  const lispPart = r.lisp ? `${r.lisp.rlocIp}|${r.lisp.instanceId}|${r.lisp.priority}|${r.lisp.weight}` : '';
+  return `${r.protocol}|${r.ospfType ?? ''}|${r.isisLevel ?? ''}|${r.ad}|${r.metric}|${r.nextHop}|${r.egressInterface}|${r.leakedFromVrf ?? ''}|${r.overlayRemoteVrf ?? ''}|${r.tag ?? ''}|${r.evpnVni ?? ''}|${r.azureNextHopType ?? ''}|${r.awsTargetType ?? ''}|${r.gcpNextHopType ?? ''}|${r.gcpPriority ?? ''}|${r.networkTag ?? ''}|${bgpPart}|${tlocPart}|${lispPart}`;
 }
 
 export function computeRibDiff(

@@ -347,30 +347,41 @@ export function computeMplsLfib(
     let nextLabel = 1600;
 
     for (const r of rib) {
-      if (!r.active || r.protocol === 'local' || r.protocol === 'connected') continue;
+      if (!r.active || r.vrf !== 'default' || r.protocol === 'local' || r.protocol === 'connected') continue;
       if (r.af === 6 && !(mpls.segmentRouting?.enabled && mpls.segmentRouting?.srv6Locator)) continue;
       if (r.protocol !== 'ospf' && r.protocol !== 'isis' && r.protocol !== 'eigrp') continue;
 
-      const remoteNode = topology.nodes.find((rn) =>
-        rn.interfaces.some((i) => {
-          if (i.shutdown) return false;
+      const matchingRemoteNodes = topology.nodes.filter((rn) => {
+        if (rn.adminDown || rn.id === node.id) return false;
+        return rn.interfaces.some((i) => {
+          if (i.shutdown || (i.vrf || 'default') !== 'default') return false;
           if (r.af === 6) {
             const p6 = i.cidr6 ? parseCidr6(i.cidr6) : null;
-            return Boolean(p6 && (p6.network === r.prefix || p6.ip === r.prefix));
+            return Boolean(
+              p6 &&
+                ((p6.network === r.prefix && p6.prefixLen === r.prefixLen) ||
+                  (p6.ip === r.prefix && r.prefixLen === 128))
+            );
           }
           const p4 = parseCidr(i.cidr);
-          return Boolean(p4 && (p4.network === r.prefix || p4.ip === r.prefix));
-        })
-      );
-      const isDirectPhp =
-        remoteNode &&
-        remoteNode.interfaces.some((i) => {
-          if (i.shutdown) return false;
+          return Boolean(
+            p4 &&
+              ((p4.network === r.prefix && p4.prefixLen === r.prefixLen) ||
+                (p4.ip === r.prefix && r.prefixLen === 32))
+          );
+        });
+      });
+      const directPhpNode = matchingRemoteNodes.find((rn) =>
+        rn.interfaces.some((i) => {
+          if (i.shutdown || (i.vrf || 'default') !== 'default') return false;
           if (r.af === 6) {
             return Boolean(i.cidr6 && parseCidr6(i.cidr6)?.ip === r.nextHop);
           }
           return parseCidr(i.cidr)?.ip === r.nextHop;
-        });
+        })
+      );
+      const isDirectPhp = Boolean(directPhpNode);
+      const remoteNode = directPhpNode ?? matchingRemoteNodes[0];
 
       if (mpls.segmentRouting?.enabled && r.af !== 6) {
         const srgbBase = mpls.segmentRouting.srgbStart ?? 16000;
@@ -417,7 +428,7 @@ export function computeMplsLfib(
         : (dstNode?.routerId ?? tun.destination);
       const match = rib
         .filter(
-          (r) => r.active && r.af !== 6 && isIpInCidr(dstIp, `${r.prefix}/${r.prefixLen}`)
+          (r) => r.active && r.af !== 6 && r.vrf === 'default' && isIpInCidr(dstIp, `${r.prefix}/${r.prefixLen}`)
         )
         .sort((a, b) => b.prefixLen - a.prefixLen)[0];
       entries.push({
@@ -452,6 +463,7 @@ export function computeMulticastMroute(
 
     for (const grp of node.multicast.igmpGroups ?? []) {
       const igmpIface = node.interfaces.find((i) => i.id === grp.interfaceId);
+      if (igmpIface?.shutdown) continue;
       const groupVrf = igmpIface?.vrf || 'default';
       const targetIp = grp.source || rp;
       let rpfInterface = 'Null0';
@@ -544,7 +556,31 @@ export function evaluateNat64(
     const p6 = parseCidr6(rule.prefix6);
     if (!p6 || !isIp6InCidr(dstIp, rule.prefix6)) continue;
     const addr6 = ip6ToBigInt(dstIp);
-    const embeddedV4 = Number(addr6 & 0xffffffffn) >>> 0;
+    // RFC 6052 §2.2 embedded IPv4 extraction for /32, /40, /48, /56, /64, and /96 prefixes
+    let embeddedV4Big: bigint;
+    switch (p6.prefixLen) {
+      case 96:
+        embeddedV4Big = addr6 & 0xffffffffn;
+        break;
+      case 64:
+        embeddedV4Big = (addr6 >> 24n) & 0xffffffffn;
+        break;
+      case 56:
+        embeddedV4Big = (((addr6 >> 64n) & 0xffn) << 24n) | ((addr6 >> 32n) & 0xffffffn);
+        break;
+      case 48:
+        embeddedV4Big = (((addr6 >> 64n) & 0xffffn) << 16n) | ((addr6 >> 40n) & 0xffffn);
+        break;
+      case 40:
+        embeddedV4Big = (((addr6 >> 64n) & 0xffffffn) << 8n) | ((addr6 >> 48n) & 0xffn);
+        break;
+      case 32:
+        embeddedV4Big = (addr6 >> 64n) & 0xffffffffn;
+        break;
+      default:
+        continue;
+    }
+    const embeddedV4 = Number(embeddedV4Big) >>> 0;
     const v4Str = uint32ToIp(embeddedV4);
     const pool4 = rule.pool4Cidr ? parseCidr(rule.pool4Cidr) : null;
     const v4Src = pool4?.ip;

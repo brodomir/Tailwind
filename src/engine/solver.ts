@@ -407,27 +407,37 @@ function buildAdjacencies(
         return;
       }
 
+      const v6Match = Boolean(
+        sParsed6 &&
+          dParsed6 &&
+          (isUnnumberedPair ||
+            (sParsed6.network === dParsed6.network && sParsed6.prefixLen === dParsed6.prefixLen))
+      );
+      if (sParsed6 && dParsed6 && !v6Match) {
+        warnings.push(
+          `IPv6 subnet mismatch on link ${srcNode.hostname}:${sIface.name} (${sIface.cidr6}) <-> ${dstNode.hostname}:${dIface.name} (${dIface.cidr6})`
+        );
+      }
+
       const subnet = `${sParsed.network}/${sParsed.prefixLen}`;
       adjMap.get(srcNode.id)!.push({
         localNodeId: srcNode.id,
         localIface: sIface,
         localIp: sParsed.ip,
-        localIp6: sParsed6?.ip,
+        ...(v6Match ? { localIp6: sParsed6!.ip, remoteIp6: dParsed6!.ip } : {}),
         remoteNodeId: dstNode.id,
         remoteIface: dIface,
         remoteIp: dParsed.ip,
-        remoteIp6: dParsed6?.ip,
         subnet,
       });
       adjMap.get(dstNode.id)!.push({
         localNodeId: dstNode.id,
         localIface: dIface,
         localIp: dParsed.ip,
-        localIp6: dParsed6?.ip,
+        ...(v6Match ? { localIp6: dParsed6!.ip, remoteIp6: sParsed6!.ip } : {}),
         remoteNodeId: srcNode.id,
         remoteIface: sIface,
         remoteIp: sParsed.ip,
-        remoteIp6: sParsed6?.ip,
         subnet,
       });
     };
@@ -541,6 +551,28 @@ function buildAdjacencies(
       continue;
     }
 
+    const effectiveSrcVlan = srcIface.vlanId ?? (link.linkType === 'layer2' ? link.vlanId : undefined);
+    const effectiveDstVlan = dstIface.vlanId ?? (link.linkType === 'layer2' ? link.vlanId : undefined);
+    if (
+      effectiveSrcVlan !== undefined &&
+      effectiveDstVlan !== undefined &&
+      effectiveSrcVlan !== effectiveDstVlan
+    ) {
+      warnings.push(
+        `VLAN mismatch on link ${srcNode.hostname}:${srcIface.name} (VLAN ${effectiveSrcVlan}) <-> ${dstNode.hostname}:${dstIface.name} (VLAN ${effectiveDstVlan})`
+      );
+      continue;
+    }
+    if (
+      !isVlanAllowedOnLink(effectiveSrcVlan, link) ||
+      !isVlanAllowedOnLink(effectiveDstVlan, link)
+    ) {
+      warnings.push(
+        `VLAN ${effectiveSrcVlan ?? effectiveDstVlan} not allowed on L2 link ${srcNode.hostname}:${srcIface.name} <-> ${dstNode.hostname}:${dstIface.name}`
+      );
+      continue;
+    }
+
     let isLagMember = false;
     if (srcIface.lacpGroup !== undefined || dstIface.lacpGroup !== undefined) {
       const lagNeg = negotiateLagPair(srcIface, dstIface);
@@ -571,28 +603,6 @@ function buildAdjacencies(
           activeLinks: [{ link, srcIf: aIf, dstIf: bIf }],
         });
       }
-    }
-
-    const effectiveSrcVlan = srcIface.vlanId ?? (link.linkType === 'layer2' ? link.vlanId : undefined);
-    const effectiveDstVlan = dstIface.vlanId ?? (link.linkType === 'layer2' ? link.vlanId : undefined);
-    if (
-      effectiveSrcVlan !== undefined &&
-      effectiveDstVlan !== undefined &&
-      effectiveSrcVlan !== effectiveDstVlan
-    ) {
-      warnings.push(
-        `VLAN mismatch on link ${srcNode.hostname}:${srcIface.name} (VLAN ${effectiveSrcVlan}) <-> ${dstNode.hostname}:${dstIface.name} (VLAN ${effectiveDstVlan})`
-      );
-      continue;
-    }
-    if (
-      !isVlanAllowedOnLink(effectiveSrcVlan, link) ||
-      !isVlanAllowedOnLink(effectiveDstVlan, link)
-    ) {
-      warnings.push(
-        `VLAN ${effectiveSrcVlan ?? effectiveDstVlan} not allowed on L2 link ${srcNode.hostname}:${srcIface.name} <-> ${dstNode.hostname}:${dstIface.name}`
-      );
-      continue;
     }
 
     pushEndpointAdjacencies(
@@ -647,6 +657,27 @@ function buildAdjacencies(
     const repLink = [...bundle.activeLinks].sort(
       (a, b) => (a.link.latencyMs ?? 0) - (b.link.latencyMs ?? 0)
     )[0].link;
+    const effSrcPoVlan = srcPo.vlanId ?? (repLink.linkType === 'layer2' ? repLink.vlanId : undefined);
+    const effDstPoVlan = dstPo.vlanId ?? (repLink.linkType === 'layer2' ? repLink.vlanId : undefined);
+    if (
+      effSrcPoVlan !== undefined &&
+      effDstPoVlan !== undefined &&
+      effSrcPoVlan !== effDstPoVlan
+    ) {
+      warnings.push(
+        `VLAN mismatch on link ${bundle.srcNode.hostname}:${srcPo.name} (VLAN ${effSrcPoVlan}) <-> ${bundle.dstNode.hostname}:${dstPo.name} (VLAN ${effDstPoVlan})`
+      );
+      continue;
+    }
+    if (
+      !isVlanAllowedOnLink(effSrcPoVlan, repLink) ||
+      !isVlanAllowedOnLink(effDstPoVlan, repLink)
+    ) {
+      warnings.push(
+        `VLAN ${effSrcPoVlan ?? effDstPoVlan} not allowed on L2 link ${bundle.srcNode.hostname}:${srcPo.name} <-> ${bundle.dstNode.hostname}:${dstPo.name}`
+      );
+      continue;
+    }
     pushEndpointAdjacencies(
       bundle.srcNode,
       bundle.dstNode,
@@ -658,7 +689,10 @@ function buildAdjacencies(
   }
 
   // Bridge L3 endpoints across unnumbered Layer 2 links/switches sharing the same VLAN
-  const l2Graph = new Map<string, { nodeId: string; vlan?: number; link: LinkConfig }[]>();
+  const l2Graph = new Map<
+    string,
+    { nodeId: string; vlan?: number; link: LinkConfig; localIface: InterfaceConfig; remoteIface: InterfaceConfig }[]
+  >();
   for (const link of topology.links) {
     if (link.adminDown || link.linkType !== 'layer2') continue;
     const sNode = nodeMap.get(link.sourceNodeId);
@@ -672,6 +706,9 @@ function buildAdjacencies(
     if (blockedL2Ports?.has(`${sNode.id}|${sIf.id}`) || blockedL2Ports?.has(`${dNode.id}|${dIf.id}`)) continue;
     if (sIf.dot1xState === 'unauthorized' || dIf.dot1xState === 'unauthorized') continue;
     if (Boolean(sIf.macsecEnabled) !== Boolean(dIf.macsecEnabled)) continue;
+    if ((sIf.lacpGroup !== undefined || dIf.lacpGroup !== undefined) && !negotiateLagPair(sIf, dIf).ok) {
+      continue;
+    }
     const sv = sIf.vlanId ?? link.vlanId;
     const dv = dIf.vlanId ?? link.vlanId;
     if (sv !== undefined && dv !== undefined && sv !== dv) continue;
@@ -679,13 +716,31 @@ function buildAdjacencies(
     if (!isVlanAllowedOnLink(vlan, link)) continue;
     if (!l2Graph.has(sNode.id)) l2Graph.set(sNode.id, []);
     if (!l2Graph.has(dNode.id)) l2Graph.set(dNode.id, []);
-    l2Graph.get(sNode.id)!.push({ nodeId: dNode.id, vlan, link });
-    l2Graph.get(dNode.id)!.push({ nodeId: sNode.id, vlan, link });
+    l2Graph.get(sNode.id)!.push({ nodeId: dNode.id, vlan, link, localIface: sIf, remoteIface: dIf });
+    l2Graph.get(dNode.id)!.push({ nodeId: sNode.id, vlan, link, localIface: dIf, remoteIface: sIf });
   }
 
   if (l2Graph.size > 0) {
     const isUnnumberedSwitch = (n: NodeConfig) =>
       n.interfaces.every((i) => !parseCidr(i.cidr) && !(i.cidr6 && parseCidr6(i.cidr6)));
+    const isIfaceEligibleForL2Edge = (iface: InterfaceConfig, edgeIface: InterfaceConfig): boolean => {
+      if (iface.id === edgeIface.id) return true;
+      const sub = getSubInterfaceInfo(iface);
+      if (sub && sub.parentName.toLowerCase() === edgeIface.name.toLowerCase()) return true;
+      if (edgeIface.lacpGroup !== undefined) {
+        const baseName = sub ? sub.parentName : iface.name;
+        if (parsePortChannelNumber(baseName) === edgeIface.lacpGroup) return true;
+      }
+      if (!iface.parentInterface && /^(?:vlan|svi|irb|bvi)/i.test(iface.name)) return true;
+      return false;
+    };
+    const getL2IfaceVlan = (iface: InterfaceConfig): number | undefined => {
+      if (iface.vlanId !== undefined) return iface.vlanId;
+      const subVlan = getSubInterfaceInfo(iface)?.vlanId;
+      if (subVlan !== undefined) return subVlan;
+      const m = iface.name.match(/^(?:vlan|svi|irb|bvi)\.?(\d+)$/i);
+      return m ? Number(m[1]) : undefined;
+    };
 
     for (const [startId, edges] of l2Graph.entries()) {
       const startNode = nodeMap.get(startId);
@@ -693,37 +748,58 @@ function buildAdjacencies(
       for (const firstEdge of edges) {
         const firstPeer = nodeMap.get(firstEdge.nodeId);
         if (!firstPeer || !isUnnumberedSwitch(firstPeer)) continue;
-        const targetVlan = firstEdge.vlan;
-        const visited = new Set<string>([startId, firstEdge.nodeId]);
-        const queue: string[] = [firstEdge.nodeId];
+        const initialFilterSig =
+          firstEdge.vlan !== undefined
+            ? String(firstEdge.vlan)
+            : firstEdge.link.allowedVlans?.trim() || '*';
+        const visited = new Set<string>([`${firstEdge.nodeId}|${initialFilterSig}`]);
+        const queue: { nodeId: string; vlan?: number; links: LinkConfig[] }[] = [
+          { nodeId: firstEdge.nodeId, vlan: firstEdge.vlan, links: [firstEdge.link] },
+        ];
         while (queue.length > 0) {
           const cur = queue.shift()!;
-          for (const nxt of l2Graph.get(cur) ?? []) {
-            if (visited.has(nxt.nodeId)) continue;
-            if (targetVlan !== undefined && nxt.vlan !== undefined && nxt.vlan !== targetVlan) continue;
-            if (!isVlanAllowedOnLink(targetVlan ?? nxt.vlan, nxt.link)) continue;
-            visited.add(nxt.nodeId);
+          for (const nxt of l2Graph.get(cur.nodeId) ?? []) {
+            if (nxt.nodeId === startId) continue;
+            if (cur.vlan !== undefined && nxt.vlan !== undefined && nxt.vlan !== cur.vlan) continue;
+            const effVlan = cur.vlan ?? nxt.vlan;
+            const pathLinks = [...cur.links, nxt.link];
+            if (effVlan !== undefined && !pathLinks.every((l) => isVlanAllowedOnLink(effVlan, l))) continue;
             const peerNode = nodeMap.get(nxt.nodeId);
             if (!peerNode) continue;
             if (isUnnumberedSwitch(peerNode)) {
-              queue.push(nxt.nodeId);
+              const filterSig =
+                effVlan !== undefined
+                  ? String(effVlan)
+                  : pathLinks
+                      .map((l) => l.allowedVlans?.trim() || '*')
+                      .filter((s) => s !== '*')
+                      .sort()
+                      .join('&') || '*';
+              const visitState = `${nxt.nodeId}|${filterSig}`;
+              if (visited.has(visitState)) continue;
+              visited.add(visitState);
+              queue.push({ nodeId: nxt.nodeId, vlan: effVlan, links: pathLinks });
               continue;
             }
             for (const sIf of startNode.interfaces) {
-              if (sIf.shutdown) continue;
+              if (sIf.shutdown || !isIfaceEligibleForL2Edge(sIf, firstEdge.localIface)) continue;
               const sp = parseCidr(sIf.cidr);
               const sp6 = sIf.cidr6 ? parseCidr6(sIf.cidr6) : null;
               if (!sp && !sp6) continue;
-              if (targetVlan !== undefined && sIf.vlanId !== undefined && sIf.vlanId !== targetVlan) continue;
+              const sVlan = getL2IfaceVlan(sIf);
+              if (effVlan !== undefined && sVlan !== undefined && sVlan !== effVlan) continue;
               for (const pIf of peerNode.interfaces) {
-                if (pIf.shutdown) continue;
+                if (pIf.shutdown || !isIfaceEligibleForL2Edge(pIf, nxt.remoteIface)) continue;
                 const pp = parseCidr(pIf.cidr);
                 const pp6 = pIf.cidr6 ? parseCidr6(pIf.cidr6) : null;
                 const v4Match = Boolean(sp && pp && sp.network === pp.network && sp.prefixLen === pp.prefixLen);
                 const v6Match = Boolean(sp6 && pp6 && sp6.network === pp6.network && sp6.prefixLen === pp6.prefixLen);
                 if (!v4Match && !v6Match) continue;
-                if (targetVlan !== undefined && pIf.vlanId !== undefined && pIf.vlanId !== targetVlan) continue;
-                if ((sIf.vlanId ?? targetVlan) !== (pIf.vlanId ?? targetVlan)) continue;
+                const pVlan = getL2IfaceVlan(pIf);
+                if (effVlan !== undefined && pVlan !== undefined && pVlan !== effVlan) continue;
+                if ((sVlan ?? effVlan) !== (pVlan ?? effVlan)) continue;
+                const finalVlan = sVlan ?? pVlan ?? effVlan;
+                if (finalVlan !== undefined && !pathLinks.every((l) => isVlanAllowedOnLink(finalVlan, l))) continue;
                 const already = (adjMap.get(startId) ?? []).some(
                   (a) => a.remoteNodeId === peerNode.id && a.localIface.id === sIf.id && a.remoteIface.id === pIf.id
                 );
@@ -1444,15 +1520,24 @@ function solveOspf(
             const remoteAbrRid = getNodeRouterId(remoteNode, remoteVrf);
             const higherAbrExists = topology.nodes.some((candAbr) => {
               if (candAbr.id === remoteNode.id || !candAbr.ospf.enabled || candAbr.adminDown) return false;
-              const hasNssa = candAbr.interfaces.some(
-                (i) => !i.shutdown && (i.vrf || 'default') === remoteVrf && i.ospfArea === rLsa.area
-              );
-              const hasArea0 = candAbr.interfaces.some(
-                (i) => !i.shutdown && (i.vrf || 'default') === remoteVrf && i.ospfArea === 0
-              );
+              const candAdjs = adjMap.get(candAbr.id) ?? [];
+              const hasActiveAdjInArea = (area: number) =>
+                candAdjs.some((ca) => {
+                  if (
+                    ca.localIface.passive ||
+                    ca.remoteIface.passive ||
+                    (ca.localIface.vrf || 'default') !== remoteVrf ||
+                    ca.localIface.ospfArea !== area ||
+                    ca.remoteIface.ospfArea !== area
+                  ) {
+                    return false;
+                  }
+                  const peer = nodeMap.get(ca.remoteNodeId);
+                  return Boolean(peer && peer.ospf.enabled && !peer.adminDown);
+                });
               return (
-                hasNssa &&
-                hasArea0 &&
+                hasActiveAdjInArea(rLsa.area) &&
+                hasActiveAdjInArea(0) &&
                 compareIpStrings(getNodeRouterId(candAbr, remoteVrf), remoteAbrRid) > 0
               );
             });
@@ -1748,6 +1833,55 @@ function solveOspf(
         });
       }
     }
+    // RFC 2328 §12.4.3: install Null0 discard route on ABR for each active area-range summary
+    for (const ar of node.ospf.areaRanges ?? []) {
+      const ap = parseCidr(ar.prefix);
+      if (!ap) continue;
+      const minMetricByVrf = new Map<string, number>();
+      for (const lsa of myMap.values()) {
+        if (
+          lsa.ospfType === 'intra' &&
+          lsa.area === ar.area &&
+          (lsa.af ?? 4) === 4 &&
+          lsa.prefixLen > ap.prefixLen &&
+          isIpInCidr(lsa.prefix, ar.prefix)
+        ) {
+          const prev = minMetricByVrf.get(lsa.vrf);
+          if (prev === undefined || lsa.metric < prev) {
+            minMetricByVrf.set(lsa.vrf, lsa.metric);
+          }
+        }
+      }
+      for (const [vrf, metric] of minMetricByVrf.entries()) {
+        const areasInVrf = new Set<number>();
+        for (const iface of node.interfaces) {
+          if (!iface.shutdown && (iface.vrf || 'default') === vrf && iface.ospfArea !== undefined) {
+            areasInVrf.add(iface.ospfArea);
+          }
+        }
+        if (
+          vrf === 'default' &&
+          Array.from(myMap.values()).some(
+            (l) => l.vrf === 'default' && l.area === 0 && (l.ospfType === 'intra' || l.ospfType === 'inter')
+          )
+        ) {
+          areasInVrf.add(0);
+        }
+        if (!areasInVrf.has(0) || areasInVrf.size <= 1) continue;
+        results.push({
+          af: 4,
+          prefix: ap.network,
+          prefixLen: ap.prefixLen,
+          vrf,
+          protocol: 'ospf',
+          ospfType: 'inter',
+          ad: getEffectiveAd(node.vendor, 'ospf', node.adOverrides, 'inter'),
+          metric,
+          nextHop: '0.0.0.0',
+          egressInterface: 'Null0',
+        });
+      }
+    }
     ospfCandidates.set(node.id, results);
   }
 
@@ -1757,7 +1891,8 @@ function solveOspf(
 function solveBgp(
   topology: TopologyState,
   activeRibByNode: Map<string, RibEntry[]>,
-  warnings?: string[]
+  warnings?: string[],
+  standbyNodes?: Set<string>
 ): Map<string, CandidateRoute[]> {
   const bgpCandidates = new Map<string, CandidateRoute[]>();
   const ipToNode = new Map<
@@ -1775,7 +1910,7 @@ function solveBgp(
 
   for (const node of topology.nodes) {
     bgpCandidates.set(node.id, []);
-    if (node.adminDown) continue;
+    if (node.adminDown || standbyNodes?.has(node.id)) continue;
     for (const iface of node.interfaces) {
       if (iface.shutdown) continue;
       const parsed = parseCidr(iface.cidr);
@@ -1800,13 +1935,15 @@ function solveBgp(
   }
 
   const nodeBestBgp = new Map<string, Map<string, CandidateRoute>>();
+  const nodeLocalBgp = new Map<string, Map<string, CandidateRoute>>();
   const nodeMultipathBgp = new Map<string, Map<string, CandidateRoute[]>>();
 
   for (const node of topology.nodes) {
     const map = new Map<string, CandidateRoute>();
     nodeBestBgp.set(node.id, map);
+    nodeLocalBgp.set(node.id, new Map<string, CandidateRoute>());
     nodeMultipathBgp.set(node.id, new Map<string, CandidateRoute[]>());
-    if (!node.bgp.enabled || node.adminDown) continue;
+    if (!node.bgp.enabled || node.adminDown || standbyNodes?.has(node.id)) continue;
 
     const bgpNetworksToOriginate = [
       ...node.bgp.networks,
@@ -1932,6 +2069,13 @@ function solveBgp(
       }
     }
 
+    // Snapshot immutable locally originated networks & redistributed routes before aggregate generation
+    // so they are never permanently lost if temporarily out-weighted by a peer route (weight > 32768).
+    const localSnap = nodeLocalBgp.get(node.id)!;
+    for (const [k, v] of map.entries()) {
+      localSnap.set(k, v);
+    }
+
     for (const agg of node.bgp.aggregates ?? []) {
       const aggVrf = agg.vrf || 'default';
       const aggAf = detectAddressFamily(agg.prefix);
@@ -1987,15 +2131,21 @@ function solveBgp(
     let changed = false;
 
     for (const node of topology.nodes) {
-      if (!node.bgp.enabled || node.adminDown) continue;
+      if (!node.bgp.enabled || node.adminDown || standbyNodes?.has(node.id)) continue;
       const myRib = activeRibByNode.get(node.id) ?? [];
       const myBestMap = nodeBestBgp.get(node.id)!;
       const allReceived = new Map<string, CandidateRoute[]>();
 
+      const localSnap = nodeLocalBgp.get(node.id)!;
+      for (const [k, localRoute] of localSnap.entries()) {
+        allReceived.set(k, [localRoute]);
+      }
       for (const existing of myBestMap.values()) {
         if (existing.bgpAttrs?.locallyOriginated) {
           const k = `${existing.vrf}|${existing.prefix}/${existing.prefixLen}`;
-          allReceived.set(k, [existing]);
+          if (!allReceived.has(k)) {
+            allReceived.set(k, [existing]);
+          }
         }
       }
 
@@ -2011,7 +2161,11 @@ function solveBgp(
             ? (parseCidr6(`${peer.peerIp}/128`)?.ip ?? peer.peerIp)
             : peer.peerIp;
         const remoteCandidates = (ipToNode.get(canonPeerIp) ?? []).filter(
-          (c) => c.node.id !== node.id && !c.node.adminDown && c.node.bgp.enabled
+          (c) =>
+            c.node.id !== node.id &&
+            !c.node.adminDown &&
+            !standbyNodes?.has(c.node.id) &&
+            c.node.bgp.enabled
         );
         const matchesPeerAsn = (c: { node: NodeConfig; vrf: string }) =>
           c.node.bgp.asn === peer.remoteAs ||
@@ -2024,9 +2178,20 @@ function solveBgp(
           remoteCandidates.find((c) => c.vrf === peerVrf) ??
           remoteCandidates.find((c) => matchesPeerAsn(c)) ??
           remoteCandidates[0];
-        if (!remote || remote.node.adminDown || !remote.node.bgp.enabled) continue;
+        if (!remote || remote.node.adminDown || standbyNodes?.has(remote.node.id) || !remote.node.bgp.enabled) continue;
         const peerAf = detectAddressFamily(peer.peerIp) ?? 4;
-        const findRemotePeerBack = (requireLocalVrf: boolean) =>
+        const updIf = peer.updateSource
+          ? node.interfaces.find((i) => !i.shutdown && i.name === peer.updateSource)
+          : undefined;
+        const updIp = updIf
+          ? peerAf === 6
+            ? (updIf.cidr6 ? parseCidr6(updIf.cidr6)?.ip : undefined)
+            : parseCidr(updIf.cidr)?.ip
+          : undefined;
+        const findRemotePeerBack = (
+          requireLocalVrf: boolean,
+          matchMode: 'updateSource' | 'sameSubnet' | 'any'
+        ) =>
           remote.node.bgp.peers.find((rp) => {
             if ((rp.vrf || 'default') !== remote.vrf) return false;
             const rpAf = detectAddressFamily(rp.peerIp) ?? 4;
@@ -2038,6 +2203,16 @@ function solveBgp(
             if (!matchesLocalAsn) return false;
             const canonRpIp =
               rpAf === 6 ? (parseCidr6(`${rp.peerIp}/128`)?.ip ?? rp.peerIp) : rp.peerIp;
+            if (matchMode === 'updateSource') {
+              return Boolean(updIp && canonRpIp === updIp);
+            }
+            if (matchMode === 'sameSubnet') {
+              const inRemoteSubnet =
+                rpAf === 6
+                  ? Boolean(remote.iface.cidr6 && isIp6InCidr(canonRpIp, remote.iface.cidr6))
+                  : isIpInCidr(canonRpIp, remote.iface.cidr);
+              if (!inRemoteSubnet) return false;
+            }
             return node.interfaces.some(
               (i) =>
                 !i.shutdown &&
@@ -2046,7 +2221,15 @@ function solveBgp(
                   (Boolean(i.cidr6) && parseCidr6(i.cidr6!)?.ip === canonRpIp))
             );
           });
-        const remotePeerBack = findRemotePeerBack(true) ?? findRemotePeerBack(false);
+        const remotePeerBack =
+          (updIp
+            ? (findRemotePeerBack(true, 'updateSource') ??
+              findRemotePeerBack(false, 'updateSource'))
+            : undefined) ??
+          findRemotePeerBack(true, 'sameSubnet') ??
+          findRemotePeerBack(false, 'sameSubnet') ??
+          findRemotePeerBack(true, 'any') ??
+          findRemotePeerBack(false, 'any');
         const remoteAsnMatches =
           remote.node.bgp.asn === peer.remoteAs ||
           remotePeerBack?.localAs === peer.remoteAs ||
@@ -2081,6 +2264,38 @@ function solveBgp(
           continue;
         }
         if (!remotePeerBack || remotePeerBack.shutdown) continue;
+        if (remotePeerBack.updateSource) {
+          const remoteUpdIf = remote.node.interfaces.find(
+            (i) => i.name === remotePeerBack.updateSource
+          );
+          if (!remoteUpdIf || remoteUpdIf.shutdown) continue;
+        }
+        const remoteRib = activeRibByNode.get(remote.node.id) ?? [];
+        const remoteReach = resolveNextHop(
+          remotePeerBack.peerIp,
+          undefined,
+          remote.vrf,
+          remoteRib,
+          remote.node
+        );
+        if (!remoteReach.resolvable) continue;
+        const remoteIsEbgp =
+          remotePeerBack.remoteAs !== (remotePeerBack.localAs ?? remote.node.bgp.asn);
+        const remoteIsDirectPeer = remote.node.interfaces.some(
+          (i) =>
+            !i.shutdown &&
+            (i.vrf || 'default') === remote.vrf &&
+            (isIpInCidr(remotePeerBack.peerIp, i.cidr) ||
+              (Boolean(i.cidr6) && isIp6InCidr(remotePeerBack.peerIp, i.cidr6!)))
+        );
+        if (
+          remoteIsEbgp &&
+          !remoteIsDirectPeer &&
+          !remotePeerBack.ebgpMultihop &&
+          !remotePeerBack.disableConnectedCheck
+        ) {
+          continue;
+        }
         const outRm =
           remotePeerBack?.routeMapOutId
             ? remote.node.routeMaps.find((m) => m.id === remotePeerBack.routeMapOutId)
@@ -2148,11 +2363,12 @@ function solveBgp(
             continue;
           }
           const isConfedPeer = Boolean(
-            peer.confederationPeer ||
-            (node.bgp.confederationId &&
-              remote.node.bgp.confederationId === node.bgp.confederationId &&
-              (node.bgp.confederationPeers?.includes(remote.node.bgp.asn) ||
-                remote.node.bgp.confederationPeers?.includes(node.bgp.asn)))
+            isEbgp &&
+              (peer.confederationPeer ||
+                (node.bgp.confederationId &&
+                  remote.node.bgp.confederationId === node.bgp.confederationId &&
+                  (node.bgp.confederationPeers?.includes(remote.node.bgp.asn) ||
+                    remote.node.bgp.confederationPeers?.includes(node.bgp.asn))))
           );
           const reflectedByRemote = Boolean(
             !isEbgp &&
@@ -2232,7 +2448,12 @@ function solveBgp(
                   ? [advertisedAsn, remote.node.bgp.asn]
                   : [advertisedAsn]),
                 ...filteredSrcAsPath.map((a) =>
-                  remotePeerBack?.asOverride && a === node.bgp.asn ? remote.node.bgp.asn : a
+                  remotePeerBack?.asOverride &&
+                    (a === node.bgp.asn ||
+                      (peer.localAs !== undefined && a === peer.localAs) ||
+                      (node.bgp.confederationId !== undefined && a === node.bgp.confederationId))
+                    ? advertisedAsn
+                    : a
                 ),
               ]
               : [...rRoute.bgpAttrs.asPath];
@@ -2286,14 +2507,8 @@ function solveBgp(
                   ? Boolean(rRoute.bgpAttrs.medMissing)
                   : true
                 : Boolean(rRoute.bgpAttrs.medMissing);
-          let communities =
-            remotePeerBack?.sendCommunity === 'none'
-              ? []
-              : [...(rRoute.bgpAttrs.communities ?? [])];
-          let largeCommunities =
-            remotePeerBack?.sendCommunity === 'none'
-              ? []
-              : [...(rRoute.bgpAttrs.largeCommunities ?? [])];
+          let communities = [...(rRoute.bgpAttrs.communities ?? [])];
+          let largeCommunities = [...(rRoute.bgpAttrs.largeCommunities ?? [])];
 
           const originAsn =
             newAsPath.length > 0
@@ -2335,6 +2550,10 @@ function solveBgp(
             );
             communities = updatedComms.communities;
             largeCommunities = updatedComms.largeCommunities;
+          }
+          if (remotePeerBack?.sendCommunity === 'none') {
+            communities = [];
+            largeCommunities = [];
           }
 
           // Check AS-path loop prevention AFTER sender's removePrivateAs, asOverride, and outbound route-map prependAsPath
@@ -2450,11 +2669,12 @@ function solveBgp(
 
         if (remotePeerBack?.defaultOriginate) {
           const defIsConfedPeer = Boolean(
-            peer.confederationPeer ||
-              (node.bgp.confederationId &&
-                remote.node.bgp.confederationId === node.bgp.confederationId &&
-                (node.bgp.confederationPeers?.includes(remote.node.bgp.asn) ||
-                  remote.node.bgp.confederationPeers?.includes(node.bgp.asn)))
+            isEbgp &&
+              (peer.confederationPeer ||
+                (node.bgp.confederationId &&
+                  remote.node.bgp.confederationId === node.bgp.confederationId &&
+                  (node.bgp.confederationPeers?.includes(remote.node.bgp.asn) ||
+                    remote.node.bgp.confederationPeers?.includes(node.bgp.asn))))
           );
           const defEffectiveEbgp = isEbgp && !defIsConfedPeer;
           const proto: ProtocolType = defEffectiveEbgp ? 'ebgp' : 'ibgp';
@@ -2468,6 +2688,7 @@ function solveBgp(
           let defAsPath: number[] = defEffectiveEbgp ? [defAdvAsn] : [];
           let defLocalPref = peer.localPref ?? 100;
           let defMed = peer.med ?? 0;
+          let defMedMissing = peer.med === undefined;
           let defComms: string[] = [];
           let defLargeComms: string[] = [];
           let defPermitted = true;
@@ -2483,7 +2704,10 @@ function solveBgp(
               defPermitted = false;
             } else {
               if (inEval.set.setLocalPref !== undefined) defLocalPref = inEval.set.setLocalPref;
-              if (inEval.set.setMed !== undefined) defMed = inEval.set.setMed;
+              if (inEval.set.setMed !== undefined) {
+                defMed = inEval.set.setMed;
+                defMedMissing = false;
+              }
               if (inEval.set.prependAsPath?.length) defAsPath = [...inEval.set.prependAsPath, ...defAsPath];
               if (inEval.set.setAd !== undefined) defAd = inEval.set.setAd;
               const updatedComms = applyRouteMapCommunities(inEval.set, defComms, defLargeComms);
@@ -2511,7 +2735,7 @@ function solveBgp(
                 confedAsPath: defIsConfedPeer ? [remote.node.bgp.asn] : undefined,
                 origin: 'igp',
                 med: defMed,
-                ...(peer.med === undefined && defMed === 0 ? { medMissing: true } : {}),
+                ...(defMedMissing ? { medMissing: true } : {}),
                 isEbgp: defEffectiveEbgp,
                 igpMetric: reach.igpMetric,
                 peerRouterId: getNodeRouterId(remote.node, remote.vrf),
@@ -2786,7 +3010,7 @@ function solveEigrp(
       if (iface.shutdown) continue;
       const parsed = parseCidr(iface.cidr);
       if (!parsed) continue;
-      const bw = iface.eigrpBw ?? 1000000;
+      const bw = iface.eigrpBw ?? (iface.speedMbps ? iface.speedMbps * 1000 : 1000000);
       const delay = iface.eigrpDelay ?? 10;
       list.push({
         prefix: parsed.network,
@@ -2804,12 +3028,29 @@ function solveEigrp(
     for (const net of node.eigrp.networks) {
       const parsed = parseCidr(net.prefix);
       if (!parsed) continue;
+      const netVrf = net.vrf || 'default';
+      const existingConn = list.find(
+        (p) =>
+          p.vrf === netVrf &&
+          p.prefix === parsed.network &&
+          p.prefixLen === parsed.prefixLen &&
+          p.nextHop === '0.0.0.0'
+      );
+      if (existingConn) {
+        if (net.bandwidth !== undefined) existingConn.minBw = net.bandwidth;
+        if (net.delay !== undefined) existingConn.sumDelay = net.delay;
+        if (net.bandwidth !== undefined || net.delay !== undefined) {
+          existingConn.fd = computeEigrpMetric(existingConn.minBw, existingConn.sumDelay, kVals);
+        }
+        if (net.tag !== undefined) existingConn.tag = net.tag;
+        continue;
+      }
       const bw = net.bandwidth ?? 1000000;
       const delay = net.delay ?? 10;
       list.push({
         prefix: parsed.network,
         prefixLen: parsed.prefixLen,
-        vrf: net.vrf || 'default',
+        vrf: netVrf,
         minBw: bw,
         sumDelay: delay,
         fd: computeEigrpMetric(bw, delay, kVals),
@@ -2936,12 +3177,12 @@ function solveEigrp(
               egressInterface: adj.localIface.name,
               viaNodeId: remote.id,
               tag: rp.tag,
-              external: rp.external,
+              external: matchedSum ? false : rp.external,
             });
             changed = true;
           } else {
             const cur = myPaths[existingIdx];
-            const rpExt = Boolean(rp.external);
+            const rpExt = matchedSum ? false : Boolean(rp.external);
             const curExt = Boolean(cur.external);
             if ((!rpExt && curExt) || (rpExt === curExt && fd < cur.fd)) {
               cur.minBw = minBw;
@@ -2949,7 +3190,7 @@ function solveEigrp(
               cur.fd = fd;
               cur.reportedAd = rp.fd;
               cur.tag = rp.tag;
-              cur.external = rp.external;
+              cur.external = rpExt;
               changed = true;
             }
           }
@@ -3168,6 +3409,7 @@ function solveIsis(
         nextHop: af === 6 ? '::' : '0.0.0.0',
         egressInterface: '',
         viaNodeId: node.id,
+        tag: net.tag,
       });
     }
 
@@ -3342,10 +3584,17 @@ function solveIsis(
       // RFC 5302 / 5305 L2 -> L1 Route Leaking on L1-L2 routers
       if (node.isis.level === 'L1-L2' && (node.isis.leakL2ToL1?.length ?? 0) > 0) {
         for (const rLsp of Array.from(myMap.values())) {
-          if (rLsp.level !== 'L2' || rLsp.nextHop === '0.0.0.0' || rLsp.nextHop === '::') continue;
+          if (rLsp.level !== 'L2') continue;
+          const lspAf = rLsp.af ?? 4;
           const matchesLeak = node.isis.leakL2ToL1!.some((lk) => {
-            const lp = parseCidr(lk.prefix);
-            return lp && rLsp.prefixLen >= lp.prefixLen && isIpInCidr(rLsp.prefix, lk.prefix);
+            const lkAf = detectAddressFamily(lk.prefix);
+            if (lkAf !== lspAf) return false;
+            const lp = lkAf === 6 ? parseCidr6(lk.prefix) : parseCidr(lk.prefix);
+            return Boolean(
+              lp &&
+                rLsp.prefixLen >= lp.prefixLen &&
+                (lkAf === 6 ? isIp6InCidr(rLsp.prefix, lk.prefix) : isIpInCidr(rLsp.prefix, lk.prefix))
+            );
           });
           if (!matchesLeak) continue;
           const l1Key = `${rLsp.af ?? 4}|${rLsp.vrf}|${rLsp.prefix}/${rLsp.prefixLen}|L1`;
@@ -3640,10 +3889,27 @@ function normalizeAdminDownLinks(rawTopology: TopologyState): TopologyState {
           ? { ...iface, shutdown: true }
           : iface
       );
+      // Shut down logical Port-Channel / LAG interfaces when all physical member interfaces are down
+      const lagGroupsPresent = new Set<number>();
+      const lagGroupsUp = new Set<number>();
+      for (const iface of afterLinks) {
+        if (iface.lacpGroup !== undefined) {
+          lagGroupsPresent.add(iface.lacpGroup);
+          if (!iface.shutdown) lagGroupsUp.add(iface.lacpGroup);
+        }
+      }
+      const afterLags = afterLinks.map((iface) => {
+        if (iface.shutdown || getSubInterfaceInfo(iface)) return iface;
+        const poNum = parsePortChannelNumber(iface.name);
+        if (poNum !== null && lagGroupsPresent.has(poNum) && !lagGroupsUp.has(poNum)) {
+          return { ...iface, shutdown: true };
+        }
+        return iface;
+      });
       const downParentNames = new Set(
-        afterLinks.filter((i) => i.shutdown).map((i) => i.name.toLowerCase())
+        afterLags.filter((i) => i.shutdown).map((i) => i.name.toLowerCase())
       );
-      const interfaces = afterLinks.map((iface) => {
+      const interfaces = afterLags.map((iface) => {
         if (iface.shutdown) return iface;
         const sub = getSubInterfaceInfo(iface);
         if (sub && downParentNames.has(sub.parentName.toLowerCase())) {
@@ -3654,6 +3920,67 @@ function normalizeAdminDownLinks(rawTopology: TopologyState): TopologyState {
       return { ...n, interfaces };
     }),
   };
+}
+
+function findLinkForAdjacency(
+  topology: TopologyState,
+  nodeMap: Map<string, NodeConfig>,
+  node: NodeConfig,
+  adj: Adjacency
+): LinkConfig | undefined {
+  const localSubInfo = getSubInterfaceInfo(adj.localIface);
+  const localParentIface = localSubInfo
+    ? node.interfaces.find((i) => i.name.toLowerCase() === localSubInfo.parentName.toLowerCase())
+    : undefined;
+  const remoteSubInfo = getSubInterfaceInfo(adj.remoteIface);
+  const remoteNode = nodeMap.get(adj.remoteNodeId);
+  const remoteParentIface = remoteSubInfo
+    ? remoteNode?.interfaces.find(
+        (i) => i.name.toLowerCase() === remoteSubInfo.parentName.toLowerCase()
+      )
+    : undefined;
+  const localPoNum = parsePortChannelNumber((localParentIface ?? adj.localIface).name);
+  const remotePoNum = parsePortChannelNumber((remoteParentIface ?? adj.remoteIface).name);
+
+  return (
+    topology.links.find(
+      (l) =>
+        !l.adminDown &&
+        ((l.sourceNodeId === node.id &&
+          (l.sourceInterfaceId === adj.localIface.id ||
+            (localParentIface && l.sourceInterfaceId === localParentIface.id)) &&
+          l.targetNodeId === adj.remoteNodeId) ||
+          (l.targetNodeId === node.id &&
+            (l.targetInterfaceId === adj.localIface.id ||
+              (localParentIface && l.targetInterfaceId === localParentIface.id)) &&
+            l.sourceNodeId === adj.remoteNodeId))
+    ) ??
+    (localPoNum !== null && remotePoNum !== null
+      ? topology.links
+          .filter((l) => {
+            if (l.adminDown) return false;
+            const isSrc = l.sourceNodeId === node.id && l.targetNodeId === adj.remoteNodeId;
+            const isDst = l.targetNodeId === node.id && l.sourceNodeId === adj.remoteNodeId;
+            if (!isSrc && !isDst) return false;
+            const lIf = node.interfaces.find(
+              (i) => i.id === (isSrc ? l.sourceInterfaceId : l.targetInterfaceId)
+            );
+            const rIf = remoteNode?.interfaces.find(
+              (i) => i.id === (isSrc ? l.targetInterfaceId : l.sourceInterfaceId)
+            );
+            return (
+              lIf &&
+              rIf &&
+              !lIf.shutdown &&
+              !rIf.shutdown &&
+              lIf.lacpGroup === localPoNum &&
+              rIf.lacpGroup === remotePoNum &&
+              negotiateLagPair(lIf, rIf).ok
+            );
+          })
+          .sort((a, b) => (a.latencyMs ?? 0) - (b.latencyMs ?? 0))[0]
+      : undefined)
+  );
 }
 
 export function solveTopology(rawTopology: TopologyState): SimulationResult {
@@ -3795,7 +4122,10 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
       const iface = node.interfaces.find((i) => i.id === grp.interfaceId && !i.shutdown);
       if (!iface || !grp.virtualIp) continue;
       const vrf = iface.vrf || 'default';
-      const fKey = `${vrf}|${grp.protocol}|${grp.groupId}|${grp.virtualIp}`;
+      const vipAf = detectAddressFamily(grp.virtualIp) ?? 4;
+      const canonVip =
+        vipAf === 6 ? (parseCidr6(`${grp.virtualIp}/128`)?.ip ?? grp.virtualIp) : grp.virtualIp;
+      const fKey = `${vrf}|${grp.protocol}|${grp.groupId}|${canonVip}`;
       const cur = fhrpWinners.get(fKey);
       if (
         !cur ||
@@ -3808,7 +4138,7 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           routerId: node.routerId,
           ifaceName: iface.name,
           vrf,
-          vip: grp.virtualIp,
+          vip: canonVip,
         });
       }
     }
@@ -3840,7 +4170,7 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
     let anyChanged = false;
 
     const ospfCands = solveOspf(topology, adjMap, activeRibByNode, warnings);
-    const bgpCands = solveBgp(topology, activeRibByNode, warnings);
+    const bgpCands = solveBgp(topology, activeRibByNode, warnings, standbyNodes);
     const eigrpCands = solveEigrp(topology, adjMap, activeRibByNode, warnings);
     const isisCands = solveIsis(topology, adjMap, activeRibByNode, warnings);
     const ripCands = solveRip(topology, adjMap, activeRibByNode);
@@ -4018,8 +4348,11 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
         const nodeAdjs = adjMap.get(node.id) ?? [];
         for (const bc of nodeBgpCands) {
           if (bc.protocol === 'ebgp') {
+            const nhAf = detectAddressFamily(bc.nextHop);
+            const canonBcNh =
+              nhAf === 6 ? (parseCidr6(`${bc.nextHop}/128`)?.ip ?? bc.nextHop) : bc.nextHop;
             const matchedAdj = nodeAdjs.find(
-              (a) => a.remoteIp === bc.nextHop || a.remoteIp6 === bc.nextHop
+              (a) => a.remoteIp === canonBcNh || a.remoteIp6 === canonBcNh
             );
             const isIpsecLink =
               matchedAdj &&
@@ -4729,6 +5062,7 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
           peerAf === 6 ? (parseCidr6(`${peer.peerIp}/128`)?.ip ?? peer.peerIp) : peer.peerIp;
         const hasMatchingIp = (n: NodeConfig, vrfFilter?: string) =>
           !n.adminDown &&
+          !standbyNodes.has(n.id) &&
           n.interfaces.some(
             (i) =>
               !i.shutdown &&
@@ -4759,28 +5093,77 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
             (isIpInCidr(peer.peerIp, i.cidr) ||
               (Boolean(i.cidr6) && isIp6InCidr(peer.peerIp, i.cidr6!)))
         );
-        const matchRemotePeerByLocalVrf = (requireVrf: boolean) =>
-          remote
-            ? remote.bgp.peers.filter((rp) => {
-                const rpAf = detectAddressFamily(rp.peerIp);
-                if (peerAf && rpAf !== peerAf) return false;
-                const canonicalRpIp =
-                  rpAf === 6 ? (parseCidr6(`${rp.peerIp}/128`)?.ip ?? rp.peerIp) : rp.peerIp;
-                return node.interfaces.some(
-                  (i) =>
-                    !i.shutdown &&
-                    (!requireVrf || (i.vrf || 'default') === peerVrf) &&
-                    (parseCidr(i.cidr)?.ip === canonicalRpIp ||
-                      (Boolean(i.cidr6) && parseCidr6(i.cidr6!)?.ip === canonicalRpIp))
-                );
-              })
-            : [];
-        const vrfMatchingRemotePeers = matchRemotePeerByLocalVrf(true);
-        const allMatchingRemotePeers =
-          vrfMatchingRemotePeers.length > 0 ? vrfMatchingRemotePeers : matchRemotePeerByLocalVrf(false);
+        const remoteIface = remote
+          ? (remote.interfaces.find(
+              (i) =>
+                !i.shutdown &&
+                (i.vrf || 'default') === peerVrf &&
+                (parseCidr(i.cidr)?.ip === canonicalPeerIp ||
+                  (Boolean(i.cidr6) && parseCidr6(i.cidr6!)?.ip === canonicalPeerIp))
+            ) ??
+              remote.interfaces.find(
+                (i) =>
+                  !i.shutdown &&
+                  (parseCidr(i.cidr)?.ip === canonicalPeerIp ||
+                    (Boolean(i.cidr6) && parseCidr6(i.cidr6!)?.ip === canonicalPeerIp))
+              ))
+          : undefined;
+        const remoteIfaceVrf = remoteIface ? (remoteIface.vrf || 'default') : peerVrf;
+        const updIf = peer.updateSource
+          ? node.interfaces.find((i) => !i.shutdown && i.name === peer.updateSource)
+          : undefined;
+        const updIp = updIf
+          ? peerAf === 6
+            ? (updIf.cidr6 ? parseCidr6(updIf.cidr6)?.ip : undefined)
+            : parseCidr(updIf.cidr)?.ip
+          : undefined;
+        const findRemotePeer = (
+          requireLocalVrf: boolean,
+          matchMode: 'updateSource' | 'sameSubnet' | 'any'
+        ) => {
+          if (!remote) return undefined;
+          const matches = remote.bgp.peers.filter((rp) => {
+            if ((rp.vrf || 'default') !== remoteIfaceVrf) return false;
+            const rpAf = detectAddressFamily(rp.peerIp);
+            if (peerAf && rpAf !== peerAf) return false;
+            const canonicalRpIp =
+              rpAf === 6 ? (parseCidr6(`${rp.peerIp}/128`)?.ip ?? rp.peerIp) : rp.peerIp;
+            if (matchMode === 'updateSource') {
+              return Boolean(updIp && canonicalRpIp === updIp);
+            }
+            if (matchMode === 'sameSubnet') {
+              if (!remoteIface) return false;
+              const inRemoteSubnet =
+                rpAf === 6
+                  ? Boolean(remoteIface.cidr6 && isIp6InCidr(canonicalRpIp, remoteIface.cidr6))
+                  : isIpInCidr(canonicalRpIp, remoteIface.cidr);
+              if (!inRemoteSubnet) return false;
+            }
+            return node.interfaces.some(
+              (i) =>
+                !i.shutdown &&
+                (!requireLocalVrf || (i.vrf || 'default') === peerVrf) &&
+                (parseCidr(i.cidr)?.ip === canonicalRpIp ||
+                  (Boolean(i.cidr6) && parseCidr6(i.cidr6!)?.ip === canonicalRpIp))
+            );
+          });
+          return (
+            matches.find(
+              (rp) =>
+                rp.remoteAs === node.bgp.asn ||
+                rp.remoteAs === peer.localAs ||
+                rp.remoteAs === node.bgp.confederationId
+            ) ?? matches[0]
+          );
+        };
         const remotePeer =
-          allMatchingRemotePeers.find((rp) => (rp.vrf || 'default') === peerVrf) ??
-          allMatchingRemotePeers[0];
+          (updIp
+            ? (findRemotePeer(true, 'updateSource') ?? findRemotePeer(false, 'updateSource'))
+            : undefined) ??
+          findRemotePeer(true, 'sameSubnet') ??
+          findRemotePeer(false, 'sameSubnet') ??
+          findRemotePeer(true, 'any') ??
+          findRemotePeer(false, 'any');
         let state: NeighborStatus['state'] = 'Established';
         let detail = `AS ${peer.remoteAs}`;
         const localAsnValid = Number.isInteger(node.bgp.asn) && node.bgp.asn >= 1 && node.bgp.asn <= 4294967295;
@@ -4788,6 +5171,9 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
         if (node.adminDown) {
           state = 'Down';
           detail = 'Node Admin Down';
+        } else if (standbyNodes.has(node.id)) {
+          state = 'Standby';
+          detail = 'HA Standby';
         } else if (peer.shutdown) {
           state = 'Down';
           detail = 'Admin Shutdown';
@@ -4928,7 +5314,10 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
     for (const grp of node.fhrpGroups ?? []) {
       const ifaceObj = node.interfaces.find((i) => i.id === grp.interfaceId);
       const grpVrf = ifaceObj?.vrf || 'default';
-      const winner = fhrpWinners.get(`${grpVrf}|${grp.protocol}|${grp.groupId}|${grp.virtualIp}`);
+      const vipAf = detectAddressFamily(grp.virtualIp) ?? 4;
+      const canonVip =
+        vipAf === 6 ? (parseCidr6(`${grp.virtualIp}/128`)?.ip ?? grp.virtualIp) : grp.virtualIp;
+      const winner = fhrpWinners.get(`${grpVrf}|${grp.protocol}|${grp.groupId}|${canonVip}`);
       const ifaceName = ifaceObj?.name ?? grp.interfaceId;
       const fhrpDown = Boolean(node.adminDown || standbyNodes.has(node.id) || !ifaceObj || ifaceObj.shutdown);
       neighbors.push({
@@ -4954,19 +5343,29 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
       }
       const localIf = node.interfaces.find((i) => i.id === localIfId && !i.shutdown);
       if (!localIf) return undefined;
+      const localPoNum = parsePortChannelNumber(localIf.name);
+      const matchingLocalIds = new Set<string>([localIfId]);
+      if (localPoNum !== null) {
+        for (const m of node.interfaces) {
+          if (!m.shutdown && m.lacpGroup === localPoNum) matchingLocalIds.add(m.id);
+        }
+      }
       for (const l of topology.links) {
         if (l.adminDown) continue;
-        const isSrc = l.sourceNodeId === node.id && l.sourceInterfaceId === localIfId;
-        const isDst = l.targetNodeId === node.id && l.targetInterfaceId === localIfId;
+        const isSrc = l.sourceNodeId === node.id && matchingLocalIds.has(l.sourceInterfaceId);
+        const isDst = l.targetNodeId === node.id && matchingLocalIds.has(l.targetInterfaceId);
         if (!isSrc && !isDst) continue;
         const rn = topology.nodes.find((n) => n.id === (isSrc ? l.targetNodeId : l.sourceNodeId));
         if (!rn || rn.adminDown) continue;
+        const lIf = node.interfaces.find(
+          (i) => i.id === (isSrc ? l.sourceInterfaceId : l.targetInterfaceId) && !i.shutdown
+        );
         const rIf = rn.interfaces.find(
           (i) => i.id === (isSrc ? l.targetInterfaceId : l.sourceInterfaceId) && !i.shutdown
         );
-        if (rIf) {
-          return { remoteNode: rn, localIfName: localIf.name, remoteIp: parseCidr(rIf.cidr)?.ip };
-        }
+        if (!lIf || !rIf) continue;
+        if (lIf.id !== localIfId && !negotiateLagPair(lIf, rIf).ok) continue;
+        return { remoteNode: rn, localIfName: localIf.name, remoteIp: parseCidr(rIf.cidr)?.ip };
       }
       return undefined;
     };
@@ -5243,16 +5642,12 @@ export function solveTopology(rawTopology: TopologyState): SimulationResult {
     }
 
     if (node.sdwanSla?.enabled) {
+      const solveNodeMap = new Map(topology.nodes.map((n) => [n.id, n]));
       for (const rule of node.sdwanSla.rules) {
         const compliant = rule.preferredMembers.some((ifName) => {
           const adj = (adjMap.get(node.id) ?? []).find((a) => a.localIface.name === ifName);
           if (!adj) return false;
-          const link = topology.links.find(
-            (l) =>
-              !l.adminDown &&
-              ((l.sourceNodeId === node.id && l.sourceInterfaceId === adj.localIface.id) ||
-                (l.targetNodeId === node.id && l.targetInterfaceId === adj.localIface.id))
-          );
+          const link = findLinkForAdjacency(topology, solveNodeMap, node, adj);
           if (!link) return false;
           if (rule.maxLatencyMs !== undefined && (link.latencyMs ?? 0) > rule.maxLatencyMs) return false;
           if (rule.maxJitterMs !== undefined && (link.jitterMs ?? 0) > rule.maxJitterMs) return false;
@@ -5416,6 +5811,9 @@ export function tracePacket(
     // Decapsulate overlay packets on the remote tunnel endpoint BEFORE uRPF/DNAT/FlowSpec/ACL/SNAT
     // so security policies and NAT evaluate the inner packet in the restored VRF.
     if (overlayInnerDstIp) {
+      const outerAf = detectAddressFamily(currentDstIp) ?? initialAf;
+      const canonOuterDst =
+        outerAf === 6 ? (parseCidr6(`${currentDstIp}/128`)?.ip ?? currentDstIp) : currentDstIp;
       const isTunnelEndpoint =
         (Boolean(node.sdwan?.enabled) ||
           Boolean(node.lisp?.enabled) ||
@@ -5425,16 +5823,15 @@ export function tracePacket(
         (node.interfaces.some(
           (i) =>
             !i.shutdown &&
-            (parseCidr(i.cidr)?.ip === currentDstIp ||
-              (i.cidr6 ? parseCidr6(i.cidr6)?.ip === currentDstIp : false))
+            (parseCidr(i.cidr)?.ip === canonOuterDst ||
+              (i.cidr6 ? parseCidr6(i.cidr6)?.ip === canonOuterDst : false))
         ) ||
-          node.routerId === currentDstIp);
+          node.routerId === canonOuterDst);
       if (isTunnelEndpoint) {
-        const outerAf = detectAddressFamily(currentDstIp) ?? initialAf;
         const outerMatches =
           outerAf === 4
-            ? buildActiveTrie(res.rib, currentVrf).longestPrefixMatch(ipToUint32(currentDstIp))
-            : buildActiveTrie6(res.rib, currentVrf).longestPrefixMatch(ip6ToBigInt(currentDstIp));
+            ? buildActiveTrie(res.rib, currentVrf).longestPrefixMatch(ipToUint32(canonOuterDst))
+            : buildActiveTrie6(res.rib, currentVrf).longestPrefixMatch(ip6ToBigInt(canonOuterDst));
         if (outerMatches?.some((m) => m.protocol === 'local' || m.protocol === 'connected')) {
           currentDstIp = overlayInnerDstIp;
           if (overlayInnerVrf) {
@@ -5865,12 +6262,7 @@ export function tracePacket(
           .map((ifName) => {
             const adj = adjs.find((a) => a.localIface.name === ifName);
             if (!adj) return null;
-            const link = topology.links.find(
-              (l) =>
-                !l.adminDown &&
-                ((l.sourceNodeId === node.id && l.sourceInterfaceId === adj.localIface.id) ||
-                  (l.targetNodeId === node.id && l.targetInterfaceId === adj.localIface.id))
-            );
+            const link = findLinkForAdjacency(topology, nodeMap, node, adj);
             if (!link) return null;
             const lat = link.latencyMs ?? 0;
             const jit = link.jitterMs ?? 0;
@@ -6272,8 +6664,9 @@ export function tracePacket(
             : buildActiveTrie6(res.rib, lookupVrf).longestPrefixMatch(ip6ToBigInt(canonSelectedNh));
         const immNh: string | undefined = nhMatches?.[0]?.nextHop;
         if (immNh && immNh !== '0.0.0.0' && immNh !== '::') {
+          const canonImmNh: string = nhAf === 6 ? (parseCidr6(`${immNh}/128`)?.ip ?? immNh) : immNh;
           nextAdj = sameEgressAdjs.find(
-            (a: Adjacency) => a.remoteIp === immNh || a.remoteIp6 === immNh
+            (a: Adjacency) => a.remoteIp === canonImmNh || a.remoteIp6 === canonImmNh
           );
         }
       }
@@ -6311,51 +6704,7 @@ export function tracePacket(
       };
     }
 
-    const localSubInfo = getSubInterfaceInfo(nextAdj.localIface);
-    const localParentIface = localSubInfo
-      ? node.interfaces.find((i) => i.name.toLowerCase() === localSubInfo.parentName.toLowerCase())
-      : undefined;
-    const localPoNum = parsePortChannelNumber((localParentIface ?? nextAdj.localIface).name);
-    const remotePoNum = parsePortChannelNumber(nextAdj.remoteIface.name);
-    const traversedLink =
-      topology.links.find(
-        (l) =>
-          !l.adminDown &&
-          ((l.sourceNodeId === node.id &&
-            (l.sourceInterfaceId === nextAdj.localIface.id ||
-              (localParentIface && l.sourceInterfaceId === localParentIface.id)) &&
-            l.targetNodeId === nextAdj.remoteNodeId) ||
-            (l.targetNodeId === node.id &&
-              (l.targetInterfaceId === nextAdj.localIface.id ||
-                (localParentIface && l.targetInterfaceId === localParentIface.id)) &&
-              l.sourceNodeId === nextAdj.remoteNodeId))
-      ) ??
-      (localPoNum !== null && remotePoNum !== null
-        ? topology.links
-          .filter((l) => {
-            if (l.adminDown) return false;
-            const isSrc = l.sourceNodeId === node.id && l.targetNodeId === nextAdj.remoteNodeId;
-            const isDst = l.targetNodeId === node.id && l.sourceNodeId === nextAdj.remoteNodeId;
-            if (!isSrc && !isDst) return false;
-            const lIf = node.interfaces.find(
-              (i) => i.id === (isSrc ? l.sourceInterfaceId : l.targetInterfaceId)
-            );
-            const rNode = nodeMap.get(nextAdj.remoteNodeId);
-            const rIf = rNode?.interfaces.find(
-              (i) => i.id === (isSrc ? l.targetInterfaceId : l.sourceInterfaceId)
-            );
-            return (
-              lIf &&
-              rIf &&
-              !lIf.shutdown &&
-              !rIf.shutdown &&
-              lIf.lacpGroup === localPoNum &&
-              rIf.lacpGroup === remotePoNum &&
-              negotiateLagPair(lIf, rIf).ok
-            );
-          })
-          .sort((a, b) => (a.latencyMs ?? 0) - (b.latencyMs ?? 0))[0]
-        : undefined);
+    const traversedLink = findLinkForAdjacency(topology, nodeMap, node, nextAdj);
     let macsecSecured = false;
     let ecnMarked = false;
     if (traversedLink) {

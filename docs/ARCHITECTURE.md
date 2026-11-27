@@ -81,7 +81,7 @@ The test suites under `src/engine/__tests__/` cover:
 - Multi-vendor control-plane convergence, AD overrides, HA/clustering, and packet traces (`solver.test.ts`, `multinational.test.ts`, `multinationalPaths.test.ts`)
 - Policy engine (`policy.test.ts`), SD-WAN (`sdwan.test.ts`), advanced overlays (`advancedFeatures.test.ts`)
 - Standards, 802.1Q sub-interfaces, LACP/PAgP Port-Channels, MPLS/DIA auto-accept, `cisco-mpls-dmvpn`, and `bgp-ecmp-lab` (`standards.test.ts`)
-- Cross-module bug-hunt regression suite and full 9-preset beta validation (`moduleAudit.test.ts`, `betaValidation.test.ts` — 121 tests total)
+- Cross-module bug-hunt regression suite and full 9-preset beta validation (`moduleAudit.test.ts`, `betaValidation.test.ts` — 126 tests total)
 
 ---
 
